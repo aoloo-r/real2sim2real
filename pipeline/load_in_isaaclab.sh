@@ -22,6 +22,6 @@ bash "$HERE/vram_guard.sh" 6500 "Isaac Lab real2sim sim" || {
   echo "Not launching Isaac Lab (insufficient VRAM)."; exit 3; }
 
 export DISPLAY="${DISPLAY:-:1}"   # always show the GUI (user preference)
-cd /home/aoloo/IsaacLab
+cd "${ISAACLAB_DIR:-$HOME/IsaacLab}"
 exec ./isaaclab.sh -p scripts/real2sim_franka.py \
   --scene_dir "$SCENE" --capture_dir "$CAP" "$@"

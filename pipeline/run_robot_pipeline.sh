@@ -14,11 +14,18 @@
 set -euo pipefail
 
 ROBOT="${ROBOT:-test@172.20.10.4}"
-SAM_DIR="/home/aoloo/sam-3d-objects"
-HUNYUAN_PY="/home/aoloo/miniforge3/envs/hunyuan3d/bin/python"
+# All workstation paths default under $HOME and are env-overridable. SAM_DIR is
+# the sam-3d-objects checkout (holds the pipeline scripts + the SAM 3D package);
+# captures/outputs are written there.
+SAM_DIR="${SAM_DIR:-$HOME/sam-3d-objects}"
+HUNYUAN_PY="${HUNYUAN_PY:-$HOME/miniforge3/envs/hunyuan3d/bin/python}"
+SAM3D_PY="${SAM3D_PY:-$HOME/miniforge3/envs/sam3d-objects/bin/python}"
+ISAACLAB_DIR="${ISAACLAB_DIR:-$HOME/IsaacLab}"; export ISAACLAB_DIR
+ROBOT_HOME="${ROBOT_HOME:-/home/test}"            # robot-side home (segbot user)
+ROBOT_CATKIN="${ROBOT_CATKIN:-$ROBOT_HOME/catkin_ws}"
 STAGE="${1:-full}"
 TS="$(date +%Y%m%d_%H%M%S)"
-ROBOT_DIR="/home/test/real2sim_captures/robot_${TS}"
+ROBOT_DIR="$ROBOT_HOME/real2sim_captures/robot_${TS}"
 DEST="${SAM_DIR}/captures/robot_${TS}"
 OUT="${SAM_DIR}/outputs/robot_${TS}"
 
@@ -37,27 +44,27 @@ if ! ping -c1 -W3 "$HOSTIP" >/dev/null 2>&1; then
 fi
 # 0c. ensure hand-eye TF (camera<->arm) is published; force-launch if missing
 HE=$(ssh -o BatchMode=yes "$ROBOT" "bash -lc '
-  source /opt/ros/melodic/setup.bash 2>/dev/null; source /home/test/catkin_ws/devel/setup.bash 2>/dev/null
+  source /opt/ros/melodic/setup.bash 2>/dev/null; source ${ROBOT_CATKIN}/devel/setup.bash 2>/dev/null
   export ROS_MASTER_URI=http://localhost:11311
   rosrun tf tf_echo ur5e_base_link camera_color_optical_frame 2>&1 & P=\$!; sleep 3; kill \$P 2>/dev/null
 '" 2>/dev/null | grep -c Translation || true)
 if [ "${HE:-0}" -eq 0 ]; then
   echo "  [tf] hand-eye not published — launching realsense_handeye_publish"
   ssh -o BatchMode=yes "$ROBOT" "bash -lc '
-    source /opt/ros/melodic/setup.bash 2>/dev/null; source /home/test/catkin_ws/devel/setup.bash 2>/dev/null
+    source /opt/ros/melodic/setup.bash 2>/dev/null; source ${ROBOT_CATKIN}/devel/setup.bash 2>/dev/null
     export ROS_MASTER_URI=http://localhost:11311
-    setsid nohup roslaunch segbot_bringup realsense_handeye_publish.launch with_aruco:=false >/home/test/handeye_publish.log 2>&1 </dev/null & sleep 10
+    setsid nohup roslaunch segbot_bringup realsense_handeye_publish.launch with_aruco:=false >${ROBOT_HOME}/handeye_publish.log 2>&1 </dev/null & sleep 10
   '" 2>/dev/null || true
 else
   echo "  [tf] hand-eye TF OK"
 fi
 
 echo "==> [1/5] Capture on segbot ($ROBOT) into $ROBOT_DIR"
-scp -o BatchMode=yes "${SAM_DIR}/capture_rgbd_ros1.py" "${ROBOT}:/home/test/capture_rgbd_ros1.py"
+scp -o BatchMode=yes "${SAM_DIR}/capture_rgbd_ros1.py" "${ROBOT}:${ROBOT_HOME}/capture_rgbd_ros1.py"
 ssh -o BatchMode=yes "$ROBOT" "bash -lc '
   source /opt/ros/melodic/setup.bash 2>/dev/null
   export ROS_MASTER_URI=http://localhost:11311
-  python /home/test/capture_rgbd_ros1.py ${ROBOT_DIR} 12
+  python ${ROBOT_HOME}/capture_rgbd_ros1.py ${ROBOT_DIR} 12
 '"
 
 echo "==> [2/5] Pull capture to $DEST"
@@ -97,7 +104,6 @@ export MANIP_TARGETS="${MANIP_TARGETS:-}"
 
 # Reconstruction backend: SAM 3D (default, best geometry) or Hunyuan3D-2.
 BACKEND="${BACKEND:-sam3d}"
-SAM3D_PY="/home/aoloo/miniforge3/envs/sam3d-objects/bin/python"
 cd "$SAM_DIR"
 if [ "$BACKEND" = "sam3d" ]; then
   echo "==> [4/5] Reconstruct (Gemini -> SAM2 -> SAM 3D, focus) -> $OUT"
