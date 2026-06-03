@@ -40,6 +40,10 @@ parser.add_argument("--pick_label", type=str, default="cup",
                     help="Substring of the object label to pick (used by 'pick' demo)")
 parser.add_argument("--place_label", type=str, default="plate",
                     help="Substring of the object label to place near (used by cup_to_plate)")
+parser.add_argument("--export_ee_traj", type=str, default=None,
+                    help="Write a robot-agnostic EE (TCP) pick trajectory in the "
+                         "ur5e_base_link frame to this JSON path, computed from the "
+                         "calibrated object position (for transfer to the real UR5e).")
 parser.add_argument("--disable_fabric", action="store_true", default=False)
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--snap_stacked", action="store_true", default=False,
@@ -431,6 +435,59 @@ if args_cli.use_extrinsics:
             print(f"[EXTRINSICS] failed to load {_ext_path}: {_e!r}")
     else:
         print("[EXTRINSICS] no extrinsics.json found; using table-plane heuristic")
+
+
+def export_ee_trajectory(layout, T_base_cam, pick_label, out_path):
+    """Write a robot-agnostic EE (TCP) pick trajectory in the ur5e_base_link
+    frame, computed straight from the calibrated object position
+    (T_base_cam @ position_cam) — independent of the sim's table-fit shift, so it
+    targets the REAL object location. Gripper points straight down (wxyz 0,1,0,0).
+    Move-only milestone: a hover keyframe 5cm above the object centroid (no
+    contact); grasp depth is refined later with --with-gripper on the robot.
+    """
+    import numpy as _np
+    import json as _json
+    objs = layout.get("objects", []) or []
+    pick = next((o for o in objs
+                 if pick_label.lower() in (o.get("label", "").lower())), None)
+    if pick is None and objs:
+        pick = max(objs, key=lambda o: (o.get("physical_size_m") or 0.0))
+    if pick is None:
+        print("[EE-EXPORT] no objects in scene; nothing to export"); return
+    di = pick.get("depth_info") or {}
+    pc = di.get("position_cam") or (pick.get("icp_pose") or {}).get("position_cam")
+    if not pc or not T_base_cam:
+        print("[EE-EXPORT] need depth position_cam + camera extrinsic; skipped"); return
+    P = _np.asarray(T_base_cam, float) @ _np.array([pc[0], pc[1], pc[2], 1.0])
+    X, Y, Z = float(P[0]), float(P[1]), float(P[2])
+    DOWN = [0.0, 1.0, 0.0, 0.0]
+    AP, HOV, LIFT = 0.15, 0.05, 0.15   # approach / hover / lift heights (m) above centroid
+    wps = [
+        {"label": "approach_above", "position": [X, Y, Z + AP],   "quaternion": DOWN, "gripper": "none"},
+        {"label": "hover_object",   "position": [X, Y, Z + HOV],  "quaternion": DOWN, "gripper": "none"},
+        {"label": "close_gripper",  "position": None,             "quaternion": None, "gripper": "close"},
+        {"label": "lift",           "position": [X, Y, Z + LIFT], "quaternion": DOWN, "gripper": "none"},
+        {"label": "retreat",        "position": [X, Y, Z + AP],   "quaternion": DOWN, "gripper": "none"},
+        {"label": "open_gripper",   "position": None,             "quaternion": None, "gripper": "open"},
+    ]
+    out = {"frame": (layout.get("camera_extrinsics") or {}).get("frame", "ur5e_base_link"),
+           "tcp_orientation": "gripper down (wxyz 0,1,0,0)",
+           "gripper": {"open_m": 0.0, "closed_m": 0.025},
+           "default_vel_scale": 0.1,
+           "pick_label": pick.get("label"),
+           "pick_position_base": [round(X, 4), round(Y, 4), round(Z, 4)],
+           "waypoints": wps}
+    with open(out_path, "w") as f:
+        _json.dump(out, f, indent=2)
+    print(f"[EE-EXPORT] wrote {out_path}: pick '{pick.get('label')}' at "
+          f"base=({X:.3f},{Y:.3f},{Z:.3f}), {len(wps)} waypoints (frame={out['frame']})")
+
+
+# Export the EE trajectory WITHOUT launching the simulator (no GPU needed).
+if args_cli.export_ee_traj:
+    _T = (scene_layout.get("camera_extrinsics") or {}).get("T_base_cam")
+    export_ee_trajectory(scene_layout, _T, args_cli.pick_label, args_cli.export_ee_traj)
+    sys.exit(0)
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app

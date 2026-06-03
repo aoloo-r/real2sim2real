@@ -1,0 +1,89 @@
+{
+  "frame": "ur5e_base_link",
+  "tcp_orientation": "gripper down (wxyz 0,1,0,0)",
+  "gripper": {
+    "open_m": 0.0,
+    "closed_m": 0.025
+  },
+  "default_vel_scale": 0.1,
+  "pick_label": "blue cup",
+  "pick_position_base": [
+    0.4833,
+    0.458,
+    0.0519
+  ],
+  "waypoints": [
+    {
+      "label": "approach_above",
+      "position": [
+        0.4833363034309873,
+        0.4580323316180357,
+        0.20187443510909855
+      ],
+      "quaternion": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "gripper": "none"
+    },
+    {
+      "label": "hover_object",
+      "position": [
+        0.4833363034309873,
+        0.4580323316180357,
+        0.10187443510909856
+      ],
+      "quaternion": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "gripper": "none"
+    },
+    {
+      "label": "close_gripper",
+      "position": null,
+      "quaternion": null,
+      "gripper": "close"
+    },
+    {
+      "label": "lift",
+      "position": [
+        0.4833363034309873,
+        0.4580323316180357,
+        0.20187443510909855
+      ],
+      "quaternion": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "gripper": "none"
+    },
+    {
+      "label": "retreat",
+      "position": [
+        0.4833363034309873,
+        0.4580323316180357,
+        0.20187443510909855
+      ],
+      "quaternion": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "gripper": "none"
+    },
+    {
+      "label": "open_gripper",
+      "position": null,
+      "quaternion": null,
+      "gripper": "open"
+    }
+  ]
+}
