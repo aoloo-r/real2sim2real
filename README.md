@@ -64,6 +64,28 @@ Backend is swappable: `BACKEND=sam3d` (default) or `BACKEND=hunyuan`.
 | `pipeline/inspect_meshes.py` / `measure_objects.py` / `tune_qa.py` | diagnostics |
 | `isaaclab/real2sim_franka.py` | Isaac Lab scene: spawn assets, calibrated placement, physics, demos |
 
+## Upstream repos (git submodules)
+
+The two big upstream codebases are pinned as submodules under `third_party/`
+(NOT vendored — they're 17 GB / 1.2 GB):
+
+| Submodule | Pinned commit |
+|-----------|---------------|
+| `third_party/sam-3d-objects` (facebookresearch) | `81a8237` |
+| `third_party/IsaacLab` (isaac-sim) | `f4aa17f` |
+
+```bash
+git clone --recursive https://github.com/aoloo-r/real2sim2real.git
+# or, in an existing clone:
+git submodule update --init   # fetches the pinned upstream versions
+```
+
+Our edited copies of a few upstream files live in `pipeline/` (`demo.py`,
+`depth_mesh.py`, `vertex_colors.py`) and `isaaclab/real2sim_franka.py`; apply
+them over the submodules (copy/symlink into `third_party/sam-3d-objects/` and
+`third_party/IsaacLab/scripts/`). SAM 3D checkpoints + the conda envs are still
+downloaded/built separately (below).
+
 ## Setup / dependencies (external)
 
 The scripts orchestrate three environments and a robot; they are NOT vendored:
