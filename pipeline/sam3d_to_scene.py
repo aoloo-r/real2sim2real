@@ -207,11 +207,53 @@ def main():
             _attach_colors(m, vcu)             # colored (not gray) primitive
             return m, vcu
 
+        def cand_cylinder():
+            # Geometry-fit a CLEAN cylinder to a thin/elongated object (pen, tube,
+            # marker) that SAM 3D can't reconstruct — dimensions + axis come from
+            # the masked depth points (not the label), so it's data-derived, and it
+            # replaces the amorphous depth-carve blob with a correctly-sized tube.
+            ys2, xs2 = np.where(masks[i]); z2 = depth[ys2, xs2]; sel = z2 > 0.05
+            if sel.sum() < 30:
+                return None
+            fx, fy, cxi, cyi = intr["fx"], intr["fy"], intr["cx"], intr["cy"]
+            pc = np.stack([(xs2[sel]-cxi)*z2[sel]/fx, (ys2[sel]-cyi)*z2[sel]/fy, z2[sel]], 1)
+            c = np.median(pc, 0); d = pc - c
+            evals, evecs = np.linalg.eigh(d.T @ d / len(d))
+            axis = evecs[:, 2]                       # long axis (max variance)
+            proj = d @ evecs
+            L = float(np.percentile(proj[:, 2], 98) - np.percentile(proj[:, 2], 2))
+            diam = max(float(np.percentile(proj[:, 1], 98) - np.percentile(proj[:, 1], 2)),
+                       float(np.percentile(proj[:, 0], 98) - np.percentile(proj[:, 0], 2)))
+            if L < 0.02 or diam / max(L, 1e-6) > 0.55:
+                return None                          # not actually elongated
+            cyl = trimesh.creation.cylinder(radius=max(diam/2.0, 5e-3),
+                                             height=max(L, 1e-3), sections=40)
+            zc = np.array([0, 0, 1.0]); v = np.cross(zc, axis)
+            s = float(np.linalg.norm(v)); cc = float(zc.dot(axis))
+            if s > 1e-8:
+                vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+                R = np.eye(3) + vx + vx @ vx * ((1-cc)/(s*s))
+            else:
+                R = np.eye(3) if cc > 0 else np.diag([1.0, -1.0, -1.0])
+            Tm = np.eye(4); Tm[:3, :3] = R; Tm[:3, 3] = c
+            cyl.apply_transform(Tm)
+            p = _to_local(cyl, up)
+            vcu = np.tile(np.asarray(color, dtype=float), (len(p.vertices), 1))
+            _attach_colors(p, vcu)
+            print(f"  [CYL] thin object -> cylinder L={L:.3f}m diam={diam:.3f}m")
+            return p, vcu
+
         builders = {"sam3d": cand_sam3d, "depthcarve": cand_depthcarve,
-                    "primitive": cand_primitive}
+                    "primitive": cand_primitive, "cylinder": cand_cylinder}
         # Always prefer the REAL SAM 3D reconstruction (no predefining shapes);
         # cand_sam3d flips dishes open-side-up. Fall back only if SAM 3D fails QA.
-        order = ["sam3d"] + (fallbacks if (args.qa and pos is not None) else [])
+        # For THIN/elongated objects (data-measured), the clean cylinder replaces the
+        # depth-carve blob (which has decent IoU but wrong 3D shape).
+        _dw = dri.get("physical_width_m") or physical_size
+        _dh = dri.get("physical_height_m") or physical_size
+        _elong = (max(_dw, _dh) >= 0.08 and min(_dw, _dh)/max(_dw, _dh, 1e-6) <= 0.45)
+        _fb = (["cylinder"] if _elong else fallbacks)
+        order = ["sam3d"] + (_fb if (args.qa and pos is not None) else [])
 
         # ---- Self-repair: try candidates in order, re-QA, keep best; accept first pass ----
         best = None

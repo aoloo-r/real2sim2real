@@ -44,6 +44,49 @@ parser.add_argument("--export_ee_traj", type=str, default=None,
                     help="Write a robot-agnostic EE (TCP) pick trajectory in the "
                          "ur5e_base_link frame to this JSON path, computed from the "
                          "calibrated object position (for transfer to the real UR5e).")
+parser.add_argument("--place_on", type=str, default=None,
+                    help="pick-and-PLACE: place the grasped object ON this target "
+                         "object (label substring, e.g. 'plate'). Computes the place "
+                         "XY from the target centre and the height from its top, and "
+                         "excludes the target from collision objects.")
+parser.add_argument("--place_dx", type=float, default=0.0,
+                    help="pick-and-MOVE: relocate the grasped object by this base +X "
+                         "(m) before releasing. 0 with place_dy=0 = pick only (no move).")
+parser.add_argument("--place_dy", type=float, default=0.0,
+                    help="pick-and-MOVE: relocate the grasped object by this base +Y (m)")
+parser.add_argument("--cal_dx", type=float, default=0.0,
+                    help="hand-eye calibration correction, base +X forward (m)")
+parser.add_argument("--cal_dy", type=float, default=0.0,
+                    help="hand-eye calibration correction, base +Y left (m)")
+parser.add_argument("--cal_dz", type=float, default=0.0,
+                    help="hand-eye calibration correction, base +Z up (m)")
+parser.add_argument("--no_auto_level", action="store_true", default=False,
+                    help="disable auto-leveling the camera tilt from the flat table "
+                         "(by default the table plane is used to correct the hand-eye "
+                         "rotation residual for every object)")
+parser.add_argument("--thin_ratio", type=float, default=2.8,
+                    help="long/short footprint ratio above which an object is treated "
+                         "as THIN (e.g. a pen/marker) -> cross-axis grasp: gripper "
+                         "yaws to close across the short axis. Derived from depth OBB.")
+parser.add_argument("--grip_max", type=float, default=0.05,
+                    help="max object width (m) the gripper can engulf for a CENTER "
+                         "grasp; wider objects get a SIDE/RIM grasp")
+parser.add_argument("--grip_up", type=float, default=0.030,
+                    help="center-grasp height above the fitted table (m) — grabs the "
+                         "lower body")
+parser.add_argument("--rim_frac", type=float, default=0.70,
+                    help="side/rim grasp height as a fraction of the object's "
+                         "estimated height above the table (0..1, 1=rim top)")
+parser.add_argument("--grasp_z_offset", type=float, default=0.0,
+                    help="Grasp-depth keyframe height (m) relative to the object "
+                         "centroid for --export_ee_traj. 0.0 = grasp at centroid "
+                         "(natural side-grip); +ve grasps higher (toward rim), "
+                         "-ve lower (toward base). The fingers close at this depth.")
+parser.add_argument("--replay_ee_traj", type=str, default=None,
+                    help="Drive the sim robot through the EXACT waypoints of an "
+                         "ee_trajectory.json (the same file sent to the real UR5e), "
+                         "so you can counter-check that the sim motion matches the "
+                         "real arm. Loops in the GUI. TCP poses are in ur5e_base_link.")
 parser.add_argument("--disable_fabric", action="store_true", default=False)
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--snap_stacked", action="store_true", default=False,
@@ -437,6 +480,175 @@ if args_cli.use_extrinsics:
         print("[EXTRINSICS] no extrinsics.json found; using table-plane heuristic")
 
 
+def _fit_table_plane_base(capture_dir, T_base_cam, seed=0):
+    """RANSAC-fit the dominant (table) plane from the depth image and return it in
+    BASE frame: dict with normal·X + d = 0 and a table_z(x,y) closure. Removes the
+    hand-eye TILT residual — a per-object depth centroid drifts with the tilt, but
+    the fitted plane gives the true table height under any (x,y). None on failure."""
+    import numpy as _np, json as _json, os as _os
+    dpath = _os.path.join(capture_dir or "", "depth.npy")
+    ipath = _os.path.join(capture_dir or "", "intrinsics.json")
+    if not (_os.path.exists(dpath) and _os.path.exists(ipath) and T_base_cam):
+        return None
+    depth = _np.load(dpath).astype(float)
+    intr = _json.load(open(ipath))
+    fx, fy, cx, cy = intr["fx"], intr["fy"], intr["cx"], intr["cy"]
+    # Restrict to the tabletop working band (objects sit ~0.6-0.95m away) so the
+    # RANSAC locks onto the TABLE, not the floor/desk/walls that a wide 0.2-3m
+    # range pulls in (those gave an unstable, over-tilted plane at 720p).
+    ys, xs = _np.where((depth > 0.45) & (depth < 1.25))
+    if len(xs) < 500:
+        ys, xs = _np.where((depth > 0.2) & (depth < 3.0))   # fallback
+    if len(xs) < 500:
+        return None
+    idx = _np.linspace(0, len(xs) - 1, num=min(8000, len(xs))).astype(int)
+    xs, ys = xs[idx], ys[idx]
+    z = depth[ys, xs]
+    pts_cam = _np.stack([(xs - cx) * z / fx, (ys - cy) * z / fy, z], axis=1)
+    T = _np.asarray(T_base_cam, float)
+    pts = (T[:3, :3] @ pts_cam.T).T + T[:3, 3]
+    g = _np.random.default_rng(seed)
+    N = len(pts)
+    best_inl, best = 0, None
+    for _ in range(500):
+        s = pts[g.integers(0, N, 3)]
+        n = _np.cross(s[1] - s[0], s[2] - s[0])
+        nn = _np.linalg.norm(n)
+        if nn < 1e-6:
+            continue
+        n = n / nn
+        if abs(n[2]) < 0.7:                       # keep near-horizontal planes only
+            continue
+        d = -n.dot(s[0])
+        inl = int((_np.abs(pts.dot(n) + d) < 0.01).sum())
+        if inl > best_inl:
+            best_inl, best = inl, (n, d)
+    if best is None:
+        return None
+    n, d = best
+    if n[2] < 0:
+        n, d = -n, -d
+    inl_mask = _np.abs(pts.dot(n) + d) < 0.01
+    centroid = pts[inl_mask].mean(axis=0)
+    return {"normal": n, "d": float(d), "inliers": best_inl, "n_pts": N,
+            "centroid": centroid,
+            "table_z": (lambda x, y: float(-(n[0] * x + n[1] * y + d) / n[2]))}
+
+
+def _align_rotation(a, b):
+    """3x3 rotation R with R @ a = b (a, b need not be unit)."""
+    import numpy as _np
+    a = _np.asarray(a, float); a = a / _np.linalg.norm(a)
+    b = _np.asarray(b, float); b = b / _np.linalg.norm(b)
+    v = _np.cross(a, b); c = float(a.dot(b)); s = float(_np.linalg.norm(v))
+    if s < 1e-8:
+        return _np.eye(3) if c > 0 else -_np.eye(3)
+    vx = _np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return _np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
+
+
+def _object_obb_level(scene_dir, box_px, depth, intr, T_base_cam, R, cam):
+    """Find the pick object's segmentation mask (best box-IoU vs box_px), back-
+    project its depth pixels to base, auto-level (R about cam), and PCA in the
+    table plane. Returns (cx, cy, phi_long, long_ext, short_ext) in the level base
+    frame, or None. Lets us grasp thin objects (pen) ACROSS their short axis."""
+    import numpy as _np, glob as _glob, os as _os
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    mdir = scene_dir.rstrip("/") + "_sam3d_raw/masks"
+    if box_px is None or not _os.path.isdir(mdir):
+        return None
+    bx0, by0, bx1, by1 = box_px
+    barea = max(1, (bx1 - bx0) * (by1 - by0))
+    best, best_iou = None, 0.0
+    for f in _glob.glob(mdir + "/*.png"):
+        m = _np.array(Image.open(f).convert("L")) > 127
+        ys, xs = _np.where(m)
+        if len(xs) < 20:
+            continue
+        mx0, my0, mx1, my1 = xs.min(), ys.min(), xs.max(), ys.max()
+        ix0, iy0, ix1, iy1 = max(bx0, mx0), max(by0, my0), min(bx1, mx1), min(by1, my1)
+        inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+        iou = inter / max(1, barea + (mx1 - mx0) * (my1 - my0) - inter)
+        if iou > best_iou:
+            best_iou, best = iou, m
+    if best is None or best_iou < 0.2:
+        return None
+    fx, fy, cxi, cyi = intr["fx"], intr["fy"], intr["cx"], intr["cy"]
+    ys, xs = _np.where(best)
+    z = depth[ys, xs]
+    sel = (z > 0.2) & (z < 3.0)
+    if sel.sum() < 30:
+        return None
+    xs, ys, z = xs[sel], ys[sel], z[sel]
+    pc = _np.stack([(xs - cxi) * z / fx, (ys - cyi) * z / fy, z], axis=1)
+    T = _np.asarray(T_base_cam, float)
+    pb = (T[:3, :3] @ pc.T).T + T[:3, 3]
+    pl = (R @ (pb - cam).T).T + cam                      # auto-level
+    xy = pl[:, :2]
+    c = _np.median(xy, axis=0)                           # robust centre
+    d = xy - c
+    evals, evecs = _np.linalg.eigh(d.T @ d / len(d))     # ascending eigenvalues
+    long_v = evecs[:, 1]
+    phi = float(_np.arctan2(long_v[1], long_v[0]))
+    proj = d @ evecs
+    # robust extents (2-98 percentile) so a few depth-outlier pixels don't inflate
+    short_ext = float(_np.percentile(proj[:, 0], 98) - _np.percentile(proj[:, 0], 2))
+    long_ext = float(_np.percentile(proj[:, 1], 98) - _np.percentile(proj[:, 1], 2))
+    if long_ext > 0.45:                                  # implausibly long -> bad mask
+        return None
+    return float(c[0]), float(c[1]), phi, long_ext, short_ext
+
+
+def _object_aabb_level(scene_dir, box_px, depth, intr, T_base_cam, R, cam):
+    """Leveled axis-aligned bbox of an object from its depth+mask, in base frame:
+    (xmin,xmax,ymin,ymax,zmin,zmax) or None. Used to build TIGHT MoveIt collision
+    boxes (true footprint + true height) instead of a max-extent cube — an
+    over-inflated cube makes the planner think the extended arm sweeps a far/flat
+    object and wrongly rejects reachable grasps."""
+    import numpy as _np, glob as _glob, os as _os
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    mdir = scene_dir.rstrip("/") + "_sam3d_raw/masks"
+    if box_px is None or not _os.path.isdir(mdir):
+        return None
+    bx0, by0, bx1, by1 = box_px
+    barea = max(1, (bx1 - bx0) * (by1 - by0))
+    best, best_iou = None, 0.0
+    for f in _glob.glob(mdir + "/*.png"):
+        m = _np.array(Image.open(f).convert("L")) > 127
+        ys, xs = _np.where(m)
+        if len(xs) < 20:
+            continue
+        mx0, my0, mx1, my1 = xs.min(), ys.min(), xs.max(), ys.max()
+        ix0, iy0, ix1, iy1 = max(bx0, mx0), max(by0, my0), min(bx1, mx1), min(by1, my1)
+        inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+        iou = inter / max(1, barea + (mx1 - mx0) * (my1 - my0) - inter)
+        if iou > best_iou:
+            best_iou, best = iou, m
+    if best is None or best_iou < 0.2:
+        return None
+    fx, fy, cxi, cyi = intr["fx"], intr["fy"], intr["cx"], intr["cy"]
+    ys, xs = _np.where(best)
+    z = depth[ys, xs]
+    sel = (z > 0.2) & (z < 3.0)
+    if sel.sum() < 30:
+        return None
+    xs, ys, z = xs[sel], ys[sel], z[sel]
+    pc = _np.stack([(xs - cxi) * z / fx, (ys - cyi) * z / fy, z], axis=1)
+    T = _np.asarray(T_base_cam, float)
+    pb = (T[:3, :3] @ pc.T).T + T[:3, 3]
+    pl = (R @ (pb - cam).T).T + cam                      # auto-level
+    lo = _np.percentile(pl, 2, axis=0)                   # robust to depth speckle
+    hi = _np.percentile(pl, 98, axis=0)
+    return (float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1]),
+            float(lo[2]), float(hi[2]))
+
+
 def export_ee_trajectory(layout, T_base_cam, pick_label, out_path):
     """Write a robot-agnostic EE (TCP) pick trajectory in the ur5e_base_link
     frame, computed straight from the calibrated object position
@@ -461,26 +673,300 @@ def export_ee_trajectory(layout, T_base_cam, pick_label, out_path):
     P = _np.asarray(T_base_cam, float) @ _np.array([pc[0], pc[1], pc[2], 1.0])
     X, Y, Z = float(P[0]), float(P[1]), float(P[2])
     DOWN = [0.0, 1.0, 0.0, 0.0]
-    AP, HOV, LIFT = 0.15, 0.05, 0.15   # approach / hover / lift heights (m) above centroid
+    size = float(pick.get("physical_size_m") or 0.0)
+    width = float(di.get("physical_width_m") or size)   # horizontal footprint
+
+    # Fit the real (flat) table plane. The table is physically level, so any tilt
+    # in the fitted normal is the CAMERA tilt that the hand-eye extrinsic misses.
+    # AUTO-LEVEL: rotate every reconstructed point about the camera origin so the
+    # table comes out horizontal — corrects that rotation for ALL objects at once
+    # (fixes the Z "below table" artifact and shrinks the XY residual). No per-object
+    # tuning. Falls back to the tilted plane / heuristic if the fit fails.
+    R = _np.eye(3)                                       # level rotation (identity if off)
+    cam = _np.asarray(T_base_cam, float)[:3, 3]
+    plane = _fit_table_plane_base(args_cli.capture_dir, T_base_cam)
+    if plane is not None and not args_cli.no_auto_level:
+        n_obs = plane["normal"]
+        tilt_deg = float(_np.degrees(_np.arccos(min(1.0, abs(n_obs[2])))))
+        R = _align_rotation(n_obs, _np.array([0.0, 0.0, 1.0]))
+        Xc, Yc, Zc = (R @ (_np.array([X, Y, Z]) - cam) + cam).tolist()
+        Z_table = float((R @ (plane["centroid"] - cam) + cam)[2])   # leveled, constant
+        print(f"[EE-EXPORT] auto-level: corrected camera tilt {tilt_deg:.2f} deg; "
+              f"object ({X:.3f},{Y:.3f},{Z:.3f})->({Xc:.3f},{Yc:.3f},{Zc:.3f}), "
+              f"level table z={Z_table:+.3f}m ({plane['inliers']}/{plane['n_pts']} inliers)")
+        X, Y, Z = Xc, Yc, Zc
+    elif plane is not None:
+        Z_table = plane["table_z"](X, Y)
+        print(f"[EE-EXPORT] table plane (no auto-level): z_table@object={Z_table:+.3f}m")
+    else:
+        Z_table = Z - 0.5 * size
+        print(f"[EE-EXPORT] table plane fit failed; heuristic z_table={Z_table:+.3f}m")
+
+    # Residual constant calibration tweak (base frame, m), applied AFTER leveling.
+    # With auto-level on this should be ~0 (leveling fixes the tilt); use only for a
+    # small leftover translation/yaw offset. +X fwd, +Y left, +Z up.
+    X += args_cli.cal_dx; Y += args_cli.cal_dy; Z += args_cli.cal_dz; Z_table += args_cli.cal_dz
+    if args_cli.cal_dx or args_cli.cal_dy or args_cli.cal_dz:
+        print(f"[EE-EXPORT] residual calibration: dX={args_cli.cal_dx:+.3f} "
+              f"dY={args_cli.cal_dy:+.3f} dZ={args_cli.cal_dz:+.3f} m")
+
+    height_est = max(2.0 * (Z - Z_table), 0.02)         # object vertical extent
+    DOWNq = [0.0, 1.0, 0.0, 0.0]
+    gq = DOWNq
+
+    # Depth OBB (in the level table plane) gives the object's true footprint axes,
+    # so a THIN object (pen/marker) — whose mask 'width' is really its LENGTH — is
+    # grasped ACROSS its short axis instead of mis-classified as a wide vessel.
+    obb = None
+    try:
+        import numpy as _np2, json as _json2, os as _os2
+        _dp = _os2.path.join(args_cli.capture_dir or "", "depth.npy")
+        _ip = _os2.path.join(args_cli.capture_dir or "", "intrinsics.json")
+        if _os2.path.exists(_dp) and _os2.path.exists(_ip):
+            _depth = _np2.load(_dp).astype(float)
+            _intr = _json2.load(open(_ip))
+            obb = _object_obb_level(args_cli.scene_dir, pick.get("box_px"),
+                                    _depth, _intr, T_base_cam, R, cam)
+    except Exception as _e:
+        print(f"[EE-EXPORT] OBB skipped: {_e!r}")
+
+    is_thin = (obb is not None and obb[4] <= args_cli.grip_max
+               and obb[3] / max(obb[4], 1e-3) >= args_cli.thin_ratio)
+    if is_thin:
+        # THIN object: grasp at the OBB centre, yaw so the fingers close across the
+        # SHORT axis (the only way to pinch a pen). theta = long-axis angle + 90 deg.
+        strat = "thin/cross-axis"
+        ocx, ocy, phi, long_ext, short_ext = obb
+        gx, gy = ocx + args_cli.cal_dx, ocy + args_cli.cal_dy
+        grasp_z = Z_table + max(args_cli.grip_up, 0.0)
+        theta = phi + _np.pi / 2.0
+        gq = [0.0, float(_np.cos(theta / 2.0)), float(_np.sin(theta / 2.0)), 0.0]
+        print(f"[EE-EXPORT] THIN object: long={long_ext:.3f}m short={short_ext:.3f}m "
+              f"yaw={_np.degrees(theta):.0f}deg (close across short axis)")
+    else:
+        # graspable width = OBB short extent (true min footprint) when available,
+        # else the depth bbox width. Narrow enough -> center; wide open vessel -> rim.
+        gwidth = obb[4] if obb is not None else width
+        if gwidth <= args_cli.grip_max:
+            strat = "center"
+            gx, gy = X, Y
+            # Grab the object's MID-BODY (its centroid height), not a fixed height
+            # above the table — otherwise a TALL object (cup) is grasped near its
+            # base, so the gripper drives down past the whole object into it. Floor
+            # at grip_up above the table so short objects still clear the surface.
+            grasp_z = max(Z, Z_table + max(args_cli.grip_up, 0.0))
+        else:
+            strat = "side/rim"
+            # Use the reconstructed MESH dimensions for the rim offset + grasp
+            # height — the depth OBB overestimates the footprint (TCP lands OUTSIDE
+            # the wall -> miss) and underestimates the height of shallow bowls
+            # (grasp targets the base, not the rim). Mesh bbox is accurate.
+            r_rim = 0.5 * (obb[3] if obb is not None else width)
+            mesh_h = height_est
+            try:
+                import trimesh as _tm
+                _mp = os.path.join(args_cli.scene_dir, "object_%d" % pick.get("id"), "mesh.obj")
+                _m = _tm.load(_mp, force="mesh", process=False)
+                _e = _m.bounds[1] - _m.bounds[0]
+                r_rim = 0.5 * float(max(_e[0], _e[1]))   # accurate footprint radius
+                mesh_h = float(_e[2])                     # accurate height
+                print(f"[EE-EXPORT] rim grasp from mesh: footprint r={r_rim:.3f}m "
+                      f"height={mesh_h:.3f}m")
+            except Exception as _e2:
+                print(f"[EE-EXPORT] mesh dims load failed ({_e2!r}); using depth OBB")
+            gx, gy = X - r_rim, Y                       # near rim, toward robot
+            # Yaw the gripper so the two fingers close RADIALLY across the wall
+            # (one finger outside, one inside the rim) — straddle ONE side. Without
+            # this the fingers close tangentially across the OPENING and the whole
+            # gripper drops into the cup and closes on nothing.
+            rim_angle = float(_np.arctan2(gy - Y, gx - X))   # center->TCP radial dir
+            ya = rim_angle - _np.pi / 2.0                    # DOWN finger-line is +Y
+            gq = [0.0, float(_np.cos(ya / 2.0)), float(_np.sin(ya / 2.0)), 0.0]
+            print(f"[EE-EXPORT] rim straddle: TCP at near wall, fingers close radially "
+                  f"(yaw {_np.degrees(ya):.0f}deg)")
+            grasp_z = Z_table + args_cli.rim_frac * mesh_h
+    grasp_z = max(grasp_z + args_cli.grasp_z_offset, Z_table + 0.010)   # never below table
+
+    # PLACE-ON: resolve a target object to set the grasped object onto (e.g. cup
+    # -> plate). Move the grasped object's CENTRE onto the target centre and release
+    # with its bottom just above the target's top.
+    place_obj = None
+    pdx, pdy = args_cli.place_dx, args_cli.place_dy
+    place_lower_z = grasp_z
+    if args_cli.place_on:
+        place_obj = next((o for o in objs
+                          if args_cli.place_on.lower() in (o.get("label", "").lower())
+                          and o is not pick), None)
+        if place_obj is not None:
+            d3 = place_obj.get("depth_info") or {}
+            p3 = d3.get("position_cam") or (place_obj.get("icp_pose") or {}).get("position_cam")
+            P3 = _np.asarray(T_base_cam, float) @ _np.array([p3[0], p3[1], p3[2], 1.0])
+            Pp = (R @ (P3[:3] - cam) + cam) if (plane is not None and not args_cli.no_auto_level) else P3[:3]
+            ppx, ppy = float(Pp[0]) + args_cli.cal_dx, float(Pp[1]) + args_cli.cal_dy
+            place_h = float(place_obj.get("physical_size_m") or 0.03)
+            plate_r = 0.5 * float(place_obj.get("physical_size_m") or 0.15)
+            try:
+                import trimesh as _tm
+                _m = _tm.load(os.path.join(args_cli.scene_dir, "object_%d" % place_obj.get("id"), "mesh.obj"),
+                              force="mesh", process=False)
+                _pe = _m.bounds[1] - _m.bounds[0]
+                place_h = float(_pe[2])
+                plate_r = 0.5 * float(max(_pe[0], _pe[1]))
+            except Exception:
+                pass
+            # Footprint radius of the object we're placing (the cup), for clearance.
+            cup_r = 0.05
+            try:
+                _cm = _tm.load(os.path.join(args_cli.scene_dir, "object_%d" % pick.get("id"), "mesh.obj"),
+                               force="mesh", process=False)
+                _cce = _cm.bounds[1] - _cm.bounds[0]
+                cup_r = 0.5 * float(max(_cce[0], _cce[1]))
+            except Exception:
+                pass
+            # AVOID STACKING: if something is already sitting on the plate (e.g. a
+            # fruit at the centre), don't lower the cup onto it (it would pass
+            # through / interpenetrate). Offset the release to a CLEAR part of the
+            # plate, beside the occupant, staying within the rim.
+            on_plate = []
+            for _o in objs:
+                if _o is pick or _o is place_obj:
+                    continue
+                _do = _o.get("depth_info") or {}
+                _po = _do.get("position_cam") or (_o.get("icp_pose") or {}).get("position_cam")
+                if not _po:
+                    continue
+                _Po = _np.asarray(T_base_cam, float) @ _np.array([_po[0], _po[1], _po[2], 1.0])
+                _Pbo = (R @ (_Po[:3] - cam) + cam) if (plane is not None and not args_cli.no_auto_level) else _Po[:3]
+                _ox, _oy = float(_Pbo[0]) + args_cli.cal_dx, float(_Pbo[1]) + args_cli.cal_dy
+                if ((_ox - ppx) ** 2 + (_oy - ppy) ** 2) ** 0.5 < plate_r:
+                    on_plate.append((_ox, _oy, 0.5 * float(_o.get("physical_size_m") or 0.05)))
+            if on_plate:
+                _ox, _oy, _or = min(on_plate, key=lambda t: (t[0] - ppx) ** 2 + (t[1] - ppy) ** 2)
+                _vx, _vy = ppx - _ox, ppy - _oy
+                _vn = (_vx * _vx + _vy * _vy) ** 0.5
+                if _vn < 1e-3:
+                    _vx, _vy, _vn = 1.0, 0.0, 1.0           # occupant at centre -> push toward +X
+                _clr = _or + cup_r + 0.01                   # centre-to-centre clearance
+                _nx, _ny = _ox + _vx / _vn * _clr, _oy + _vy / _vn * _clr
+                _dx, _dy = _nx - ppx, _ny - ppy             # clamp to stay on the plate
+                _dn = (_dx * _dx + _dy * _dy) ** 0.5
+                _lim = max(0.0, plate_r - cup_r - 0.005)
+                if _dn > _lim and _dn > 1e-6:
+                    _nx, _ny = ppx + _dx / _dn * _lim, ppy + _dy / _dn * _lim
+                print(f"[EE-EXPORT] plate occupied (obj@{_ox:.3f},{_oy:.3f} r={_or:.3f}); "
+                      f"placing cup CLEAR at ({_nx:.3f},{_ny:.3f}) instead of centre ({ppx:.3f},{ppy:.3f})")
+                ppx, ppy = _nx, _ny
+            pdx, pdy = ppx - X, ppy - Y          # carry the cup CENTRE onto the target clear spot
+            place_lower_z = grasp_z + place_h + 0.015   # release just above the target top
+            print(f"[EE-EXPORT] place ON '{place_obj.get('label')}' at "
+                  f"({ppx:.3f},{ppy:.3f}); target top +{place_h:.3f}m -> lower_z={place_lower_z:.3f}")
+        else:
+            print(f"[EE-EXPORT] place_on '{args_cli.place_on}' not found; pick only")
+
+    # Heights are absolute above the FITTED table, so they're safe for any object.
+    AP_Z = Z_table + 0.18
+    HOV_Z = grasp_z + 0.05
+    print(f"[EE-EXPORT] strategy={strat} width={width:.3f}m grip_max={args_cli.grip_max:.3f}m "
+          f"height_est={height_est:.3f}m -> grasp=({gx:.3f},{gy:.3f},{grasp_z:.3f})")
     wps = [
-        {"label": "approach_above", "position": [X, Y, Z + AP],   "quaternion": DOWN, "gripper": "none"},
-        {"label": "hover_object",   "position": [X, Y, Z + HOV],  "quaternion": DOWN, "gripper": "none"},
+        # OPEN the gripper FIRST — the fingers must be open before descending onto
+        # the object, otherwise we arrive already-closed and grasp nothing.
+        {"label": "open_pregrasp",  "position": None,             "quaternion": None, "gripper": "open"},
+        {"label": "approach_above", "position": [gx, gy, AP_Z],   "quaternion": gq, "gripper": "none"},
+        {"label": "hover_object",   "position": [gx, gy, HOV_Z],  "quaternion": gq, "gripper": "none"},
+        {"label": "descend_to_grasp", "position": [gx, gy, grasp_z], "quaternion": gq, "gripper": "none"},
         {"label": "close_gripper",  "position": None,             "quaternion": None, "gripper": "close"},
-        {"label": "lift",           "position": [X, Y, Z + LIFT], "quaternion": DOWN, "gripper": "none"},
-        {"label": "retreat",        "position": [X, Y, Z + AP],   "quaternion": DOWN, "gripper": "none"},
-        {"label": "open_gripper",   "position": None,             "quaternion": None, "gripper": "open"},
+        {"label": "lift",           "position": [gx, gy, AP_Z],   "quaternion": gq, "gripper": "none"},
     ]
+    if args_cli.place_on or args_cli.place_dx or args_cli.place_dy:
+        # PICK-AND-PLACE / MOVE: carry the grasped object and set it down.
+        wps += [
+            {"label": "move_above_place", "position": [gx + pdx, gy + pdy, AP_Z], "quaternion": gq, "gripper": "none"},
+            {"label": "lower_to_place",   "position": [gx + pdx, gy + pdy, place_lower_z], "quaternion": gq, "gripper": "none"},
+            {"label": "open_gripper",     "position": None, "quaternion": None, "gripper": "open"},
+            {"label": "retreat",          "position": [gx + pdx, gy + pdy, AP_Z], "quaternion": gq, "gripper": "none"},
+        ]
+        print(f"[EE-EXPORT] place at ({gx+pdx:.3f},{gy+pdy:.3f},{place_lower_z:.3f}) "
+              f"(offset dX={pdx:+.2f} dY={pdy:+.2f})")
+    else:
+        wps += [
+            {"label": "retreat",       "position": [gx, gy, AP_Z], "quaternion": gq, "gripper": "none"},
+            {"label": "open_gripper",  "position": None,           "quaternion": None, "gripper": "open"},
+        ]
+
+    # Collision geometry for the REAL robot's planner (MoveIt) so the transferred
+    # motion is planned COLLISION-FREE: the fitted TABLE plane + every OTHER object
+    # as a box (the target object is omitted — we grasp it). Same auto-level frame
+    # as the grasp, so it lines up with the waypoints.
+    # Table box top sits 2cm BELOW the real surface so the gripper fingers can
+    # reach low rim grasps (e.g. a shallow bowl) without MoveIt's finger-collision
+    # spheres clipping the table and failing to plan the descend.
+    coll = [{"name": "table", "type": "box",
+             "center": [round(gx, 3), round(gy, 3), round(Z_table - 0.04, 3)],
+             "size": [1.2, 1.2, 0.04]}]
+    # depth+intrinsics for accurate per-object collision AABBs (footprint+height)
+    _cdepth = _cintr = None
+    try:
+        import numpy as _np3, json as _json3, os as _os3
+        _dp3 = _os3.path.join(args_cli.capture_dir or "", "depth.npy")
+        _ip3 = _os3.path.join(args_cli.capture_dir or "", "intrinsics.json")
+        if _os3.path.exists(_dp3) and _os3.path.exists(_ip3):
+            _cdepth = _np3.load(_dp3).astype(float)
+            _cintr = _json3.load(open(_ip3))
+    except Exception:
+        _cdepth = _cintr = None
+    for o in objs:
+        if o is pick or o is place_obj:   # skip the grasped object AND the place target
+            continue
+        d2 = o.get("depth_info") or {}
+        p2 = d2.get("position_cam") or (o.get("icp_pose") or {}).get("position_cam")
+        if not p2:
+            continue
+        P2 = _np.asarray(T_base_cam, float) @ _np.array([p2[0], p2[1], p2[2], 1.0])
+        Pb = (R @ (P2[:3] - cam) + cam) if (plane is not None and not args_cli.no_auto_level) else P2[:3]
+        sz = float(o.get("physical_size_m") or 0.05)
+        # Prefer the REAL leveled AABB (tight box) over a max-extent cube. A cube
+        # over-inflates flat objects' height/width and blocks reachable far grasps.
+        aabb = None
+        if _cdepth is not None:
+            try:
+                aabb = _object_aabb_level(args_cli.scene_dir, o.get("box_px"),
+                                          _cdepth, _cintr, T_base_cam, R, cam)
+            except Exception:
+                aabb = None
+        if aabb is not None:
+            xmin, xmax, ymin, ymax, zmin, zmax = aabb
+            sx = max(0.02, xmax - xmin); sy = max(0.02, ymax - ymin)
+            sz_box = max(0.02, zmax - Z_table)            # height above the table
+            ccx = 0.5 * (xmin + xmax) + args_cli.cal_dx
+            ccy = 0.5 * (ymin + ymax) + args_cli.cal_dy
+            ccz = Z_table + 0.5 * sz_box
+            coll.append({"name": "obj_%s" % o.get("id"), "type": "box",
+                         "center": [round(ccx, 3), round(ccy, 3), round(ccz, 3)],
+                         "size": [round(sx, 3), round(sy, 3), round(sz_box, 3)]})
+        else:
+            coll.append({"name": "obj_%s" % o.get("id"), "type": "box",
+                         "center": [round(float(Pb[0]) + args_cli.cal_dx, 3),
+                                    round(float(Pb[1]) + args_cli.cal_dy, 3),
+                                    round(Z_table + 0.5 * sz, 3)],
+                         "size": [round(sz, 3), round(sz, 3), round(sz, 3)]})
+    print(f"[EE-EXPORT] collision geometry: table + {len(coll)-1} object box(es) "
+          f"for MoveIt collision-free planning")
     out = {"frame": (layout.get("camera_extrinsics") or {}).get("frame", "ur5e_base_link"),
            "tcp_orientation": "gripper down (wxyz 0,1,0,0)",
            "gripper": {"open_m": 0.0, "closed_m": 0.025},
            "default_vel_scale": 0.1,
            "pick_label": pick.get("label"),
-           "pick_position_base": [round(X, 4), round(Y, 4), round(Z, 4)],
+           "grasp_strategy": strat,
+           "table_z_at_object": round(Z_table, 4),
+           "pick_position_base": [round(gx, 4), round(gy, 4), round(grasp_z, 4)],
+           "object_center_base": [round(X, 4), round(Y, 4), round(Z, 4)],
+           "collision_objects": coll,
            "waypoints": wps}
     with open(out_path, "w") as f:
         _json.dump(out, f, indent=2)
-    print(f"[EE-EXPORT] wrote {out_path}: pick '{pick.get('label')}' at "
-          f"base=({X:.3f},{Y:.3f},{Z:.3f}), {len(wps)} waypoints (frame={out['frame']})")
+    print(f"[EE-EXPORT] wrote {out_path}: pick '{pick.get('label')}' ({strat}) "
+          f"grasp=({gx:.3f},{gy:.3f},{grasp_z:.3f}), {len(wps)} waypoints")
 
 
 # Export the EE trajectory WITHOUT launching the simulator (no GPU needed).
@@ -488,6 +974,11 @@ if args_cli.export_ee_traj:
     _T = (scene_layout.get("camera_extrinsics") or {}).get("T_base_cam")
     export_ee_trajectory(scene_layout, _T, args_cli.pick_label, args_cli.export_ee_traj)
     sys.exit(0)
+
+# Replay the exported EE trajectory through cuRobo (collision-free planned motion)
+# so the sim shows the SAME trajectory the real robot runs — proper validation.
+if args_cli.replay_ee_traj and args_cli.demo == "none":
+    args_cli.demo = "curobo_pick"
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -1923,7 +2414,10 @@ def main():
         # (for flat/wide objects like plates and bowls that exceed gripper opening)
         SIDE_QUAT_CU = torch.tensor([[0.7071, -0.7071, 0.0, 0.0]], device="cuda")
         EE_OFFSET_Z = 0.105  # hand frame → fingertip offset
-        GRIPPER_MAX_OPENING = 0.08  # Panda gripper max finger opening (m)
+        # Decision threshold for enclose-vs-wall grasp = the REAL gripper (Robotiq
+        # HandE ~5cm stroke), NOT the sim Panda's 8cm — so the sim does the SAME
+        # wall grasp the real robot must do (sim==real validation).
+        GRIPPER_MAX_OPENING = 0.05
 
         plan_config = MotionGenPlanConfig(
             enable_graph=True, max_attempts=30, enable_finetune_trajopt=True,
@@ -2002,10 +2496,22 @@ def main():
 
             # Determine grasp strategy: if object is wider than gripper, offset
             # to the edge where it's narrower (grippable from top-down).
+            # Use the TRUE footprint WIDTH (mesh XY extent), not physical_size_m
+            # (which is the MAX dim = HEIGHT for a tall cup -> over-offsets the
+            # gripper past the object and it grasps air, the bug we hit).
             obj_phys_size = 0.0
             for s in staged:
                 if s["label"].lower() == pick_label_str.lower():
                     obj_phys_size = float(s.get("physical_size_m") or 0.0)
+                    try:
+                        _mm = trimesh.load(str(s["obj_dir"] / "mesh.obj"),
+                                           force="mesh", process=False)
+                        _e = _mm.bounds[1] - _mm.bounds[0]
+                        obj_phys_size = float(max(_e[0], _e[1]))   # XY footprint
+                        print(f"  [GRASP] mesh footprint width={obj_phys_size*100:.1f}cm "
+                              f"(was max-dim {float(s.get('physical_size_m') or 0)*100:.1f}cm)")
+                    except Exception as _ex:
+                        print(f"  [GRASP] mesh footprint load failed ({_ex!r}); using max-dim")
                     break
             # Offset to edge for wide objects so gripper closes on narrow rim
             # For objects wider than the gripper, offset to grip the RIM on one
@@ -2041,6 +2547,49 @@ def main():
                 ("retreat",        torch.tensor([plx, ply, 0.30 + EE_OFFSET_Z]), 0.04, DOWN_QUAT_CU),
             ]
 
+            # REPLAY: drive cuRobo through the EXACT exported EE waypoints (the same
+            # wall-grasp pick-and-move the real robot runs), instead of the demo's
+            # own grasp. TCP poses are in world frame (= ur5e_base_link); add
+            # EE_OFFSET_Z for the Panda hand frame.
+            if args_cli.replay_ee_traj:
+                import json as _json
+                _t = _json.load(open(args_cli.replay_ee_traj))
+                segments = []
+                _grip = 0.04
+                for _w in _t.get("waypoints", []):
+                    _p = _w.get("position")
+                    if _p is None:
+                        g = _w.get("gripper", "none")
+                        _grip = 0.0 if g == "close" else (0.04 if g == "open" else _grip)
+                        segments.append((_w.get("label", "grip"), None, _grip, DOWN_QUAT_CU))
+                    else:
+                        _q = _w.get("quaternion") or [0.0, 1.0, 0.0, 0.0]
+                        qt = torch.tensor([[_q[0], _q[1], _q[2], _q[3]]], device="cuda")
+                        segments.append((_w.get("label", "pose"),
+                                         torch.tensor([_p[0], _p[1], _p[2] + EE_OFFSET_Z]),
+                                         _grip, qt))
+                print(f"  [REPLAY] {len(segments)} cuRobo segments from {args_cli.replay_ee_traj}")
+
+            # SIM-ATTACH: the sim Franka's contact-only grasp drops the
+            # reconstructed cup (finicky mesh friction), so for a clean recording
+            # we KINEMATICALLY attach the picked object to the gripper when it
+            # closes (object follows the EE) and release it when it opens. This is
+            # visualization only — the real grasp is validated on hardware.
+            _pick_lbl = (args_cli.pick_label or "").lower()
+            if args_cli.replay_ee_traj:
+                try:
+                    _pick_lbl = (_t.get("pick_label") or _pick_lbl).lower()
+                except Exception:
+                    pass
+            held_rigid = None
+            for _s, (_oid, _rigid) in zip(staged, sam_objects):
+                if _pick_lbl and _pick_lbl in str(_s.get("label", "")).lower():
+                    held_rigid = _rigid
+                    break
+            attach = {"on": False, "off": None, "quat": None}
+            print(f"  [SIM-ATTACH] picked object for carry: "
+                  f"{'found' if held_rigid is not None else 'NOT FOUND'} (label~'{_pick_lbl}')")
+
             for seg_name, goal_pos, gripper_val, seg_quat in segments:
                 print(f"\n  [cuRobo] segment: {seg_name}")
 
@@ -2054,6 +2603,15 @@ def main():
                     robot.update(dt)
                     for _, obj in sam_objects:
                         obj.update(dt)
+                    # carry the held object: lock it to the gripper EE each step
+                    if attach["on"] and held_rigid is not None:
+                        _ee = robot.data.body_pose_w[:, hand_body_id, :3]
+                        _newp = _ee + attach["off"]
+                        held_rigid.write_root_pose_to_sim(
+                            torch.cat([_newp, attach["quat"]], dim=1))
+                        held_rigid.write_root_velocity_to_sim(
+                            torch.zeros((1, 6), device=_newp.device))
+                        held_rigid.update(dt)
 
                 def settle(seconds=0.5):
                     """Hold position for a short time to let physics stabilize."""
@@ -2087,6 +2645,18 @@ def main():
                     # Gripper-only action — actively hold arm position while
                     # closing/opening the gripper. Without this, the arm drifts
                     # and the fingers lose contact with the object.
+                    # SIM-ATTACH toggle: close -> grab (snapshot cup->EE offset and
+                    # follow), open -> release (cup rests where it was placed).
+                    if held_rigid is not None:
+                        if gripper_val < 0.02:
+                            _ee0 = robot.data.body_pose_w[:, hand_body_id, :3]
+                            attach["off"] = (held_rigid.data.root_pos_w[:, :3] - _ee0).clone()
+                            attach["quat"] = held_rigid.data.root_quat_w[:, :4].clone()
+                            attach["on"] = True
+                            print("    [SIM-ATTACH] cup grabbed — follows gripper")
+                        else:
+                            attach["on"] = False
+                            print("    [SIM-ATTACH] cup released")
                     finger_target = torch.tensor(
                         [[gripper_val, gripper_val]], device=device
                     )
@@ -2133,6 +2703,33 @@ def main():
     place_label_str = ""
     target_xyz = None
     gripper_pos = 0.04
+
+    # ----- EE-trajectory replay (counter-check sim vs real) -----
+    # Build a flat step list from the SAME ee_trajectory.json sent to the robot.
+    # JSON positions are fingertip/TCP poses in ur5e_base_link (= sim world); the
+    # Franka diff_ik targets the HAND frame, so add EE_FINGERTIP_OFFSET to z (the
+    # gripper points down, fingertip is that far below the hand). Result: the sim
+    # fingertip traces the exact poses the real UR5e fingertip is commanded to.
+    replay_steps = []
+    replay_idx = 0
+    REPLAY = bool(args_cli.replay_ee_traj)
+    REPLAY_HOLD_S = 2.5          # seconds to dwell on each pose / gripper event
+    if REPLAY:
+        import json as _json
+        _rt = _json.load(open(args_cli.replay_ee_traj))
+        for _w in _rt.get("waypoints", []):
+            _p = _w.get("position")
+            if _p is None:
+                replay_steps.append({"label": _w.get("label", "grip"),
+                                     "grip": _w.get("gripper", "none"), "xyz": None})
+            else:
+                replay_steps.append({
+                    "label": _w.get("label", "pose"), "grip": "none",
+                    "xyz": (float(_p[0]), float(_p[1]),
+                            float(_p[2]) + EE_FINGERTIP_OFFSET)})
+        print(f"[REPLAY] loaded {len(replay_steps)} steps from "
+              f"{args_cli.replay_ee_traj} (frame={_rt.get('frame')}) — "
+              f"sim fingertip will trace the real-robot TCP poses; loops in GUI")
 
     def begin_action(idx):
         """Resolve targets for plan[idx] from live physics. Returns False if invalid."""
@@ -2190,8 +2787,26 @@ def main():
         if args_cli.demo != "none":
             elapsed = (step - state_start_step) * dt
 
+            # ----- EE-trajectory replay (drives the SAME json sent to the robot) -----
+            if REPLAY:
+                s = replay_steps[replay_idx] if replay_steps else None
+                if s is not None:
+                    target_xyz = s["xyz"]            # None during gripper events (hold)
+                    if s["grip"] == "close":
+                        gripper_pos = 0.0
+                    elif s["grip"] == "open":
+                        gripper_pos = 0.04
+                    if elapsed >= REPLAY_HOLD_S:
+                        replay_idx += 1
+                        if replay_idx >= len(replay_steps):
+                            replay_idx = 0
+                            print(f"  [REPLAY step {step}] loop complete -> restart")
+                        state_start_step = step
+                        diff_ik.reset()
+                        print(f"  [REPLAY step {step}] -> {replay_steps[replay_idx]['label']}")
+
             # ----- State machine transitions -----
-            if state == "settle":
+            elif state == "settle":
                 target_xyz = None
                 gripper_pos = 0.04
                 if elapsed >= SETTLE_SECONDS:

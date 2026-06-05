@@ -87,6 +87,7 @@ def compute_physical_sizes(
         ys_m, xs_m = np.where(binary)
         z_m = depth[ys_m, xs_m]
         sel = z_m > 0.05
+        x3 = y3 = None
         if sel.sum() >= 30:
             x3 = (xs_m[sel] - cx_i) * z_m[sel] / fx
             y3 = (ys_m[sel] - cy_i) * z_m[sel] / fy
@@ -104,13 +105,22 @@ def compute_physical_sizes(
                   f"exceeds max {max_size_m*100:.1f}cm — capping")
             phys_size = max_size_m
 
-        # Also compute 3D centroid (useful for world-frame placement)
-        mask_center_u = (c0 + c1) / 2.0
-        mask_center_v = (r0 + r1) / 2.0
-        # 3D position in camera frame
-        x_cam = (mask_center_u - intrinsics["cx"]) * median_z / fx
-        y_cam = (mask_center_v - intrinsics["cy"]) * median_z / fy
-        z_cam = median_z
+        # Grasp point = ROBUST 3D centroid of the masked point cloud (median of
+        # the back-projected points = the object's central axis). The old method
+        # back-projected the pixel-bbox MIDPOINT, which drifts off-axis for
+        # asymmetric/partially-occluded masks and biased the grasp laterally
+        # (gripper landing to one side of the object). Median is robust to stray
+        # mask pixels and depth noise. Falls back to bbox-center only when sparse.
+        if x3 is not None:
+            x_cam = float(np.median(x3))
+            y_cam = float(np.median(y3))
+            z_cam = float(np.median(z_m[sel]))
+        else:
+            mask_center_u = (c0 + c1) / 2.0
+            mask_center_v = (r0 + r1) / 2.0
+            x_cam = (mask_center_u - intrinsics["cx"]) * median_z / fx
+            y_cam = (mask_center_v - intrinsics["cy"]) * median_z / fy
+            z_cam = median_z
 
         results.append({
             "label": label,

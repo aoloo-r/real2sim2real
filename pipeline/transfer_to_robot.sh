@@ -45,6 +45,6 @@ ssh -t -o BatchMode=yes "$ROBOT" "bash -lc '
   source /opt/ros/melodic/setup.bash 2>/dev/null
   source ${ROBOT_CATKIN}/devel/setup.bash 2>/dev/null
   export ROS_MASTER_URI=http://localhost:11311
-  python ${ROBOT_HOME}/ur5e_ee_executor.py --traj ${ROBOT_HOME}/ee_trajectory.json \
+  python -u ${ROBOT_HOME}/ur5e_ee_executor.py --traj ${ROBOT_HOME}/ee_trajectory.json \
     --group ${GROUP} --vel ${VEL} ${EXTRA_ARGS}
 '"
