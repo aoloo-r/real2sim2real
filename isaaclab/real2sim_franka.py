@@ -87,6 +87,20 @@ parser.add_argument("--replay_ee_traj", type=str, default=None,
                          "ee_trajectory.json (the same file sent to the real UR5e), "
                          "so you can counter-check that the sim motion matches the "
                          "real arm. Loops in the GUI. TCP poses are in ur5e_base_link.")
+parser.add_argument("--robot", type=str, default="franka", choices=["franka", "ur5e"],
+                    help="Sim robot. 'ur5e' uses the real UR5e + Robotiq Hand-E "
+                         "(matches the hardware) so the sim grasp is a true "
+                         "physics validation of what transfers to the real arm.")
+parser.add_argument("--ee_offset_z", type=float, default=None,
+                    help="EE-link -> fingertip offset (m) for cuRobo replay. "
+                         "Default 0.105 (Franka hand), 0.16 (UR5e tool0+HandE).")
+parser.add_argument("--sim_attach", action="store_true", default=False,
+                    help="Kinematically attach the grasped object to the gripper "
+                         "(viz crutch). Default OFF: the gripper must hold it by "
+                         "PHYSICS — the whole point of the sim-first validation.")
+parser.add_argument("--capture_grasp", action="store_true", default=False,
+                    help="Save camera frames of the grasp sequence (hover/descend/"
+                         "close/lift) to /tmp/grasp_*.png for diagnosing physics grasps.")
 parser.add_argument("--disable_fabric", action="store_true", default=False)
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--snap_stacked", action="store_true", default=False,
@@ -995,6 +1009,38 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
+try:
+    from _ur_assets import (UR5E_ROBOTIQ_CFG, ROBOTIQ_2F85_OPEN, ROBOTIQ_2F85_CLOSED)
+except Exception as _ur_e:  # only needed for --robot ur5e
+    UR5E_ROBOTIQ_CFG = None
+    ROBOTIQ_2F85_OPEN, ROBOTIQ_2F85_CLOSED = 0.0, 0.70
+
+
+def _strip_redundant_articulation_roots(root_path, keep_at):
+    """The bundled UR5e + Robotiq 2F-85 variant authors the gripper with its OWN
+    ArticulationRootAPI -> Isaac Lab's "multiple articulations" error. Remove the
+    extra root(s) so the arm's root_joint is the sole articulation root."""
+    from pxr import Usd, UsdPhysics
+    from isaaclab.sim.utils import get_current_stage
+    stage = get_current_stage()
+    root_prim = stage.GetPrimAtPath(root_path)
+    if not root_prim.IsValid():
+        return []
+    removed = []
+    for prim in Usd.PrimRange(root_prim):
+        if not UsdPhysics.ArticulationRootAPI(prim):
+            continue
+        if str(prim.GetPath()) == keep_at:
+            continue
+        prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+        try:
+            from pxr import PhysxSchema
+            if PhysxSchema.PhysxArticulationAPI(prim):
+                prim.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
+        except ImportError:
+            pass
+        removed.append(str(prim.GetPath()))
+    return removed
 
 # Table surface is at z=0 in world frame (ground pushed down 1.05m). Franka base sits at z=0.
 # Table top center is at (0.5, 0, 0) with a 90 deg Z rotation (matching lift_env_cfg).
@@ -1606,10 +1652,30 @@ def main():
         "/World/envs/env_0/Table", table_cfg, translation=TABLE_POS, orientation=TABLE_ROT
     )
 
-    # --- Franka Panda (sits on table surface at z=0) ---
-    robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.copy()
-    robot_cfg.prim_path = "/World/envs/env_0/Robot"
-    robot = Articulation(robot_cfg)
+    # --- Arm: Franka Panda OR the real UR5e + Robotiq Hand-E ---
+    # The base sits at the world origin = ur5e_base_link frame, so the exported
+    # EE waypoints (in that frame) line up directly, same as the Franka.
+    if args_cli.robot == "ur5e":
+        if UR5E_ROBOTIQ_CFG is None:
+            raise RuntimeError(f"--robot ur5e requested but UR5e cfg failed to import: {_ur_e!r}")
+        robot_cfg = UR5E_ROBOTIQ_CFG.copy()
+        robot_cfg.init_state.pos = (0.0, 0.0, 0.0)        # base at origin (= ur5e_base_link)
+        robot_cfg.prim_path = "/World/envs/env_0/Robot"
+        print("[INFO] Robot: UR5e + Robotiq 2F-85 (bundled, clean articulation)")
+        # Spawn manually, then strip the gripper's redundant ArticulationRootAPI
+        # BEFORE Articulation() resolves the root (else dual-root error).
+        robot_cfg.spawn.func(robot_cfg.prim_path, robot_cfg.spawn,
+                             translation=robot_cfg.init_state.pos,
+                             orientation=robot_cfg.init_state.rot)
+        _removed = _strip_redundant_articulation_roots(
+            robot_cfg.prim_path, keep_at=f"{robot_cfg.prim_path}/root_joint")
+        if _removed:
+            print(f"[INFO] stripped redundant articulation root(s): {_removed}")
+        robot = Articulation(robot_cfg)
+    else:
+        robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.copy()        # sits on table surface at z=0
+        robot_cfg.prim_path = "/World/envs/env_0/Robot"
+        robot = Articulation(robot_cfg)
 
     # --- Load SAM 3D objects ---
     scene_path = Path(scene_dir)
@@ -1710,16 +1776,11 @@ def main():
         # sensitive to marching-cubes base noise for tall objects.
         if os.path.exists(obj_path):
             obj_data = next((o for o in scene_layout["objects"] if o["id"] == obj_id), {})
-            extents = obj_data.get("physical_extents") or [0.05, 0.05, 0.05]
-            # Density-based mass: uniform default 200 kg/m^3 (plastic-ish),
-            # scaled by OBB volume. Capped to [0.05, 1.5] kg for stability.
-            vol = float(extents[0] * extents[1] * extents[2])
-            obj_mass = max(0.05, min(1.5, vol * 200.0))
             display_color = obj_data.get("display_color")
             label = obj_data.get("label", "")
             category = category_from_label(label)
-            # Compute visual scale: for baked meshes the vertices are already
-            # metric (scale=1); for raw SAM 3D meshes, derive from depth.
+            # Compute visual scale FIRST: baked meshes are metric (scale=1); raw
+            # SAM 3D meshes derive from depth.
             if physical_scale_baked:
                 vis_scale = 1.0
             else:
@@ -1731,6 +1792,25 @@ def main():
                     vis_scale = sx * OBJECT_SCALE_MULT
                     print(f"  [WARN] object_{obj_id}: no physical_size_m — "
                           f"using legacy scale {vis_scale:.4f}")
+            # Collision extents: prefer physical_extents; else derive from the REAL
+            # mesh bbox * vis_scale. The scene layout often lacks physical_extents,
+            # and the old 5cm default made the collider a phantom the gripper closed
+            # on (grasp missed). The mesh bbox gives the true object size.
+            extents = obj_data.get("physical_extents")
+            if not extents:
+                try:
+                    import trimesh as _tmx
+                    _mmx = _tmx.load(obj_path, force="mesh", process=False)
+                    _eex = (_mmx.bounds[1] - _mmx.bounds[0]) * vis_scale
+                    extents = [max(0.01, float(_eex[0])), max(0.01, float(_eex[1])), max(0.01, float(_eex[2]))]
+                    print(f"  [COLLISION] object_{obj_id}: physical_extents missing -> mesh bbox "
+                          f"{extents[0]*100:.1f}x{extents[1]*100:.1f}x{extents[2]*100:.1f}cm")
+                except Exception as _cex:
+                    extents = [0.05, 0.05, 0.05]
+                    print(f"  [COLLISION] object_{obj_id}: mesh bbox failed ({_cex!r}); 5cm default")
+            # Density-based mass scaled by volume, capped [0.05, 1.5] kg.
+            vol = float(extents[0] * extents[1] * extents[2])
+            obj_mass = max(0.05, min(1.5, vol * 200.0))
             out_usd = str(obj_dir / "mesh_obb.usd")
             print(f"  Building object_{obj_id}/mesh_obb.usd "
                   f"(label='{label}', category={category}, "
@@ -2248,6 +2328,14 @@ def main():
     except Exception as e:
         print(f"  [COLOR] failed to apply display colors: {e}")
 
+    # Diagnostic camera (created before reset) for capturing the grasp sequence.
+    grasp_cam = None
+    if args_cli.capture_grasp:
+        from isaaclab.sensors import Camera as _Cam, CameraCfg as _CamCfg
+        grasp_cam = _Cam(_CamCfg(
+            prim_path="/World/grasp_cam", height=600, width=800, data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(focal_length=24.0, clipping_range=(0.03, 30.0))))
+
     # Reset
     sim.reset()
     robot.reset()
@@ -2270,9 +2358,22 @@ def main():
         from isaaclab.sim import SphereCfg, PreviewSurfaceCfg
         from isaaclab.utils.math import subtract_frame_transforms
 
-        arm_joint_ids, _ = robot.find_joints("panda_joint.*", preserve_order=True)
-        finger_joint_ids, _ = robot.find_joints("panda_finger_joint.*", preserve_order=True)
-        hand_body_ids, _ = robot.find_bodies("panda_hand")
+        if args_cli.robot == "ur5e":
+            # Direct index lookup (proven in ur5e_drive_demo.py) — find_joints with
+            # a regex LIST + preserve_order rejects exact joint names in this build.
+            _jn = list(robot.data.joint_names)
+            _bn = list(robot.data.body_names)
+            arm_joint_ids = [_jn.index(n) for n in
+                ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                 "wrist_1_joint", "wrist_2_joint", "wrist_3_joint")]
+            finger_joint_ids = [_jn.index("finger_joint")]   # 2F-85 single drive joint
+            _ee = "tool0" if "tool0" in _bn else "wrist_3_link"
+            hand_body_ids = [_bn.index(_ee)]
+            print(f"[INFO] UR5e joints arm={arm_joint_ids} fingers={finger_joint_ids} ee_body={_ee}")
+        else:
+            arm_joint_ids, _ = robot.find_joints("panda_joint.*", preserve_order=True)
+            finger_joint_ids, _ = robot.find_joints("panda_finger_joint.*", preserve_order=True)
+            hand_body_ids, _ = robot.find_bodies("panda_hand")
         hand_body_id = hand_body_ids[0]
         ee_jacobi_idx = hand_body_id - 1  # fixed base
 
@@ -2388,7 +2489,7 @@ def main():
         )
 
         motion_gen_config = MotionGenConfig.load_from_robot_config(
-            "franka.yml",
+            "ur5e.yml" if args_cli.robot == "ur5e" else "franka.yml",
             world_model=world_config,
             tensor_args=tensor_args,
             num_trajopt_seeds=8,
@@ -2401,19 +2502,35 @@ def main():
         motion_gen.warmup(warmup_js_trajopt=False)
         print("[cuRobo] Ready.")
 
-        JOINT_NAMES = [
-            "panda_joint1", "panda_joint2", "panda_joint3", "panda_joint4",
-            "panda_joint5", "panda_joint6", "panda_joint7",
-        ]
-        HOME_JS = torch.tensor(
-            [[0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741]], device="cuda"
-        )
+        if args_cli.robot == "ur5e":
+            JOINT_NAMES = [
+                "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+            ]
+            HOME_JS = torch.tensor(
+                [[0.0, -1.5708, -1.5708, -1.5708, 1.5708, 0.0]], device="cuda"
+            )
+        else:
+            JOINT_NAMES = [
+                "panda_joint1", "panda_joint2", "panda_joint3", "panda_joint4",
+                "panda_joint5", "panda_joint6", "panda_joint7",
+            ]
+            HOME_JS = torch.tensor(
+                [[0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741]], device="cuda"
+            )
         # Gripper-down quaternion (wxyz for cuRobo)
         DOWN_QUAT_CU = torch.tensor([[0.0, 1.0, 0.0, 0.0]], device="cuda")
         # Side-grasp quaternion: gripper approaches along +Y, fingers open vertically
         # (for flat/wide objects like plates and bowls that exceed gripper opening)
         SIDE_QUAT_CU = torch.tensor([[0.7071, -0.7071, 0.0, 0.0]], device="cuda")
-        EE_OFFSET_Z = 0.105  # hand frame → fingertip offset
+        # EE-link -> fingertip offset. cuRobo plans the EE link (Franka: panda_hand;
+        # UR5e: tool0 flange); the fingertip sits this far below it (gripper down).
+        if args_cli.ee_offset_z is not None:
+            EE_OFFSET_Z = float(args_cli.ee_offset_z)
+        elif args_cli.robot == "ur5e":
+            EE_OFFSET_Z = 0.16   # tool0 -> Hand-E fingertip (refine vs real 0.187)
+        else:
+            EE_OFFSET_Z = 0.105  # panda_hand -> fingertip
         # Decision threshold for enclose-vs-wall grasp = the REAL gripper (Robotiq
         # HandE ~5cm stroke), NOT the sim Panda's 8cm — so the sim does the SAME
         # wall grasp the real robot must do (sim==real validation).
@@ -2551,16 +2668,22 @@ def main():
             # wall-grasp pick-and-move the real robot runs), instead of the demo's
             # own grasp. TCP poses are in world frame (= ur5e_base_link); add
             # EE_OFFSET_Z for the Panda hand frame.
+            # Gripper joint targets per robot. Hand-E sliders are INVERTED vs the
+            # Panda: 0.0 = OPEN, 0.025 = CLOSED (per-finger). Franka: 0.04 open, 0.0 closed.
+            if args_cli.robot == "ur5e":
+                GRIP_OPEN, GRIP_CLOSE = ROBOTIQ_2F85_OPEN, ROBOTIQ_2F85_CLOSED
+            else:
+                GRIP_OPEN, GRIP_CLOSE = 0.04, 0.0
             if args_cli.replay_ee_traj:
                 import json as _json
                 _t = _json.load(open(args_cli.replay_ee_traj))
                 segments = []
-                _grip = 0.04
+                _grip = GRIP_OPEN
                 for _w in _t.get("waypoints", []):
                     _p = _w.get("position")
                     if _p is None:
                         g = _w.get("gripper", "none")
-                        _grip = 0.0 if g == "close" else (0.04 if g == "open" else _grip)
+                        _grip = GRIP_CLOSE if g == "close" else (GRIP_OPEN if g == "open" else _grip)
                         segments.append((_w.get("label", "grip"), None, _grip, DOWN_QUAT_CU))
                     else:
                         _q = _w.get("quaternion") or [0.0, 1.0, 0.0, 0.0]
@@ -2570,25 +2693,68 @@ def main():
                                          _grip, qt))
                 print(f"  [REPLAY] {len(segments)} cuRobo segments from {args_cli.replay_ee_traj}")
 
-            # SIM-ATTACH: the sim Franka's contact-only grasp drops the
-            # reconstructed cup (finicky mesh friction), so for a clean recording
-            # we KINEMATICALLY attach the picked object to the gripper when it
-            # closes (object follows the EE) and release it when it opens. This is
-            # visualization only — the real grasp is validated on hardware.
-            _pick_lbl = (args_cli.pick_label or "").lower()
+            # SIM-ATTACH (OPT-IN, viz crutch): kinematically stick the picked
+            # object to the gripper on close. DEFAULT OFF — the point of sim-first
+            # validation is that the gripper holds the object by PHYSICS. Enable
+            # with --sim_attach only for a guaranteed-clean recording.
+            attach = {"on": False, "off": None, "quat": None}
+            held_rigid = None
+            if args_cli.sim_attach:
+                _pick_lbl = (args_cli.pick_label or "").lower()
+                if args_cli.replay_ee_traj:
+                    try:
+                        _pick_lbl = (_t.get("pick_label") or _pick_lbl).lower()
+                    except Exception:
+                        pass
+                for _s, (_oid, _rigid) in zip(staged, sam_objects):
+                    if _pick_lbl and _pick_lbl in str(_s.get("label", "")).lower():
+                        held_rigid = _rigid
+                        break
+                print(f"  [SIM-ATTACH] ON — picked object for carry: "
+                      f"{'found' if held_rigid is not None else 'NOT FOUND'} (label~'{_pick_lbl}')")
+            else:
+                print("  [SIM-ATTACH] OFF — relying on PHYSICS grasp (use --sim_attach to force)")
+
+            # GRASP-SUCCESS tracking (always on): follow the picked object so the
+            # sim REPORTS whether the physics grasp actually held through lift+place.
+            # This is what turns the sim into a validator (pass/fail), not just a viz.
+            _track_lbl = (args_cli.pick_label or "").lower()
             if args_cli.replay_ee_traj:
                 try:
-                    _pick_lbl = (_t.get("pick_label") or _pick_lbl).lower()
+                    _track_lbl = (_t.get("pick_label") or _track_lbl).lower()
                 except Exception:
                     pass
-            held_rigid = None
-            for _s, (_oid, _rigid) in zip(staged, sam_objects):
-                if _pick_lbl and _pick_lbl in str(_s.get("label", "")).lower():
-                    held_rigid = _rigid
-                    break
-            attach = {"on": False, "off": None, "quat": None}
-            print(f"  [SIM-ATTACH] picked object for carry: "
-                  f"{'found' if held_rigid is not None else 'NOT FOUND'} (label~'{_pick_lbl}')")
+            pick_rigid = held_rigid
+            if pick_rigid is None:
+                for _s, (_oid, _rigid) in zip(staged, sam_objects):
+                    if _track_lbl and _track_lbl in str(_s.get("label", "")).lower():
+                        pick_rigid = _rigid
+                        break
+
+            def _pick_pos():
+                if pick_rigid is None:
+                    return (float("nan"),) * 3
+                p = pick_rigid.data.root_pos_w[0]
+                return float(p[0]), float(p[1]), float(p[2])
+
+            grasp_track = {"z0": _pick_pos()[2], "z_lift": None, "end": None}
+            print(f"  [GRASP-CHECK] tracking '{_track_lbl}' "
+                  f"{'(found)' if pick_rigid is not None else '(NOT FOUND)'}; "
+                  f"rest z={grasp_track['z0']:.3f}")
+
+            def _cap_grasp(tag):
+                if grasp_cam is None:
+                    return
+                from PIL import Image as _GImg
+                px, py, pz = _pick_pos()
+                eye = torch.tensor([[px + 0.30, py - 0.30, pz + 0.22]], device=device)
+                tgt = torch.tensor([[px, py, pz]], device=device)
+                grasp_cam.set_world_poses_from_view(eye, tgt)
+                for _ in range(3):
+                    sim.step(); grasp_cam.update(dt)
+                rgb = grasp_cam.data.output["rgb"][0].detach().cpu().numpy()
+                _GImg.fromarray(rgb[..., :3].astype("uint8")).save(f"/tmp/grasp_{tag}.png")
+                print(f"  [capture] /tmp/grasp_{tag}.png", flush=True)
 
             for seg_name, goal_pos, gripper_val, seg_quat in segments:
                 print(f"\n  [cuRobo] segment: {seg_name}")
@@ -2625,7 +2791,7 @@ def main():
                               f"({steps_per_wp} physics steps each)")
                         # Execute trajectory at correct speed
                         finger_target = torch.tensor(
-                            [[gripper_val, gripper_val]], device=device
+                            [[gripper_val] * len(finger_joint_ids)], device=device
                         )
                         for t in range(traj.shape[0]):
                             robot.set_joint_position_target(
@@ -2639,6 +2805,11 @@ def main():
                         current_js = traj[-1:].clone()
                         # Let the arm settle before next segment
                         settle(0.3)
+                        if seg_name == "lift":
+                            grasp_track["z_lift"] = _pick_pos()[2]
+                            _rise = grasp_track["z_lift"] - grasp_track["z0"]
+                            print(f"    [GRASP-CHECK] after lift: cup z={grasp_track['z_lift']:.3f} "
+                                  f"(rose {_rise*100:+.1f}cm from rest)")
                     else:
                         print(f"    SKIPPING (plan failed)")
                 else:
@@ -2648,7 +2819,7 @@ def main():
                     # SIM-ATTACH toggle: close -> grab (snapshot cup->EE offset and
                     # follow), open -> release (cup rests where it was placed).
                     if held_rigid is not None:
-                        if gripper_val < 0.02:
+                        if abs(gripper_val - GRIP_CLOSE) < abs(gripper_val - GRIP_OPEN):
                             _ee0 = robot.data.body_pose_w[:, hand_body_id, :3]
                             attach["off"] = (held_rigid.data.root_pos_w[:, :3] - _ee0).clone()
                             attach["quat"] = held_rigid.data.root_quat_w[:, :4].clone()
@@ -2658,7 +2829,7 @@ def main():
                             attach["on"] = False
                             print("    [SIM-ATTACH] cup released")
                     finger_target = torch.tensor(
-                        [[gripper_val, gripper_val]], device=device
+                        [[gripper_val] * len(finger_joint_ids)], device=device
                     )
                     hold_steps = int(2.5 / dt)
                     for step_i in range(hold_steps):
@@ -2673,12 +2844,40 @@ def main():
                     actual_fingers = robot.data.joint_pos[:, finger_joint_ids]
                     ee_pos_w = robot.data.body_pose_w[:, hand_body_id, :3]
                     fingertip_z = ee_pos_w[0, 2].item() - EE_OFFSET_Z
-                    print(f"    gripper {'closed' if gripper_val < 0.02 else 'opened'}"
-                          f"  target={gripper_val:.3f}"
-                          f"  actual=[{actual_fingers[0,0]:.4f}, {actual_fingers[0,1]:.4f}]"
-                          f"  gap={actual_fingers.sum().item()*2*100:.1f}mm"
+                    _fvals = ", ".join("%.4f" % v for v in actual_fingers[0].tolist())
+                    print(f"    gripper {'closing' if gripper_val > GRIP_OPEN + 1e-3 else 'opening'}"
+                          f"  target={gripper_val:.3f}  actual=[{_fvals}]"
                           f"  hand_z={ee_pos_w[0,2].item():.4f}"
                           f"  fingertip_z≈{fingertip_z:.4f}")
+
+                if seg_name in ("hover_object", "descend_to_grasp", "close_gripper", "lift", "lower_to_place"):
+                    _cap_grasp(seg_name)
+
+        # ---- GRASP-SUCCESS VERDICT (physics, no attach) ----
+        try:
+            _ex, _ey, _ez = _pick_pos()
+            _z0 = grasp_track["z0"]
+            _zl = grasp_track["z_lift"]
+            _place = None
+            for _w in (_t.get("waypoints", []) if args_cli.replay_ee_traj else []):
+                if _w.get("label") == "lower_to_place" and _w.get("position"):
+                    _place = _w["position"]
+            _lifted = (_zl is not None and (_zl - _z0) > 0.04)
+            _placed = (_place is not None
+                       and ((_ex - _place[0]) ** 2 + (_ey - _place[1]) ** 2) ** 0.5 < 0.08)
+            print("\n" + "=" * 56)
+            print("  GRASP-CHECK VERDICT (sim physics, no kinematic attach)")
+            print(f"    cup rest z={_z0:.3f}  "
+                  f"lift z={'n/a' if _zl is None else round(_zl, 3)}  "
+                  f"end=({_ex:.3f},{_ey:.3f},{_ez:.3f})")
+            print(f"    GRASPED (cup rose >4cm during lift): {'YES' if _lifted else 'NO'}")
+            if _place is not None:
+                print(f"    PLACED near target ({_place[0]:.3f},{_place[1]:.3f}): "
+                      f"{'YES' if _placed else 'NO'}")
+            print(f"    => {'SUCCESS' if _lifted else 'FAIL — gripper did not hold the cup'}")
+            print("=" * 56)
+        except Exception as _ve:
+            print(f"  [GRASP-CHECK] verdict error: {_ve!r}")
 
         print(f"\n[cuRobo] All {len(curobo_plan_actions)} actions complete! Holding position...")
 
