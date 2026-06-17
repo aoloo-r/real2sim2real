@@ -4,3 +4,6 @@ outputs/
 captures/
 *.log
 .DS_Store
+
+# local convenience symlinks to the live heavy installs (not portable; see third_party/ for upstream pins)
+engines/

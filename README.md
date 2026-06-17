@@ -60,8 +60,18 @@ real2sim2real/
 ├── transfer/     sim → real UR5e:  MoveIt EE executor + transfer orchestration
 ├── scripts/      orchestration + utils (run_robot_pipeline.sh, load_in_isaaclab.sh, vram_guard.sh)
 ├── docs/         TWIN_TAMP.md (the TAMP + parallel-twin layer)
-└── third_party/  upstream submodules (sam-3d-objects, IsaacLab)
+├── engines/      local symlinks to the live heavy installs (gitignored, this machine):
+│                   IsaacLab/ -> ~/IsaacLab,  sam-3d-objects/ -> ~/sam-3d-objects,
+│                   Hunyuan3D-2/ -> ~/Hunyuan3D-2
+└── third_party/  upstream submodules (sam-3d-objects, IsaacLab) — pinned commits for portable clone
 ```
+
+**Why symlinks, not copies, for the engines:** IsaacLab is editable-installed into
+the `isaaclab` conda env and sam-3d-objects is ~19 G (with data + the SAM3D package);
+moving/copying them would break the conda installs and duplicate tens of GB. `engines/`
+gives one-folder access to the live installs without either cost. For a *portable*
+checkout, `git clone --recursive` fetches the pinned upstream commits into `third_party/`.
+Recreate the symlinks on a new machine: `mkdir -p engines && ln -sfn <path> engines/<name>`.
 
 ### Key files
 | File | Role |
