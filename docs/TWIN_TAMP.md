@@ -17,7 +17,7 @@ LANGUAGE ──► TASK PLAN ──► N CANDIDATE PLANS ──► PARALLEL SEAR
 
 ## Files
 
-### `pipeline/` (runs in the sam-3d-objects conda env, no Isaac)
+### `tamp/` (runs in the sam-3d-objects conda env, no Isaac)
 | File | Role |
 |------|------|
 | `tamp_plan.py` | Language instruction + scene → grounded symbolic goal + **ordered pick/place actions** (Gemini, object-agnostic). |
@@ -26,7 +26,11 @@ LANGUAGE ──► TASK PLAN ──► N CANDIDATE PLANS ──► PARALLEL SEAR
 | `tamp_to_ee.py` | TAMP action plan → EE-trajectory JSON(s) (the motion compiler), via `ee_geometry`. |
 | `cgn_to_ee_traj.py` | Contact-GraspNet grasp → EE-trajectory JSON. |
 
-### `isaaclab/` (runs via `./isaaclab.sh -p`, Isaac env)
+### `perception/` — capture → detect (Gemini) → reconstruct (SAM 3D) → QA → `scene_layout.json`
+### `transfer/` — sim → real UR5e (`ur5e_ee_executor.py` MoveIt, `transfer_to_robot.sh`)
+### `scripts/` — orchestration (`run_robot_pipeline.sh`, `load_in_isaaclab.sh`, `vram_guard.sh`)
+
+### `twin/` (runs via `./isaaclab.sh -p`, Isaac env)
 | File | Role |
 |------|------|
 | `real2sim_franka.py` | Loads the reconstructed scene; `--replay_ee_traj` / `--replay_plan` execute a (multi-step) plan with a per-step grasp-success verdict. |
@@ -39,16 +43,16 @@ LANGUAGE ──► TASK PLAN ──► N CANDIDATE PLANS ──► PARALLEL SEAR
 
 ```bash
 # 1. language -> task plan
-python pipeline/tamp_plan.py --scene_dir <out> --capture_dir <cap> \
+python tamp/tamp_plan.py --scene_dir <out> --capture_dir <cap> \
     --instruction "put the kiwi in the bowl and the cup on the plate" --out /tmp/task_plan.json
 # 2. task plan -> N candidate plans
-python pipeline/twin_plan_search.py --task_plan /tmp/task_plan.json --n 8 --out /tmp/candidates.json
+python tamp/twin_plan_search.py --task_plan /tmp/task_plan.json --n 8 --out /tmp/candidates.json
 # 3. PARALLEL SEARCH in the twin -> ranked, winner (headless = fast; GUI = watch the N envs)
-./isaaclab.sh -p isaaclab/twin_plan_eval.py --scene_dir <out> --capture_dir <cap> \
+./isaaclab.sh -p twin/twin_plan_eval.py --scene_dir <out> --capture_dir <cap> \
     --candidates /tmp/candidates.json [--headless]
 # 4. execute the winning plan (compile its EE trajectories, then replay)
 #    (compile winner -> plan_manifest.json, then:)
-./isaaclab.sh -p isaaclab/real2sim_franka.py --scene_dir <out> --capture_dir <cap> \
+./isaaclab.sh -p twin/real2sim_franka.py --scene_dir <out> --capture_dir <cap> \
     --robot franka --sim_attach --replay_plan <plan_manifest.json>
 ```
 

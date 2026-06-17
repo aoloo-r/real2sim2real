@@ -45,24 +45,42 @@ Backend is swappable: `BACKEND=sam3d` (default) or `BACKEND=hunyuan`.
 - **Quality is gated.** Every object is render-verified vs its mask; bad ones get
   repaired or flagged `needs_recapture` instead of shipping junk.
 
-## File map
+## Repository layout
 
+Organized by pipeline stage. Each directory is one stage of real → sim → real.
+
+```
+real2sim2real/
+├── perception/   real → scene:  capture (RGBD+extrinsics) → detect (Gemini) →
+│                 reconstruct (SAM 3D) → metric/calibrated scene + render-compare QA
+├── tamp/         task+motion planning:  language → task plan → N candidate plans →
+│                 EE-trajectory compiler;  shared grasp/place geometry (ee_geometry.py)
+├── twin/         Isaac Lab digital twin:  scene loader, multi-step replay + per-step
+│                 verdict, and the PARALLEL task-plan search engine (twin_plan_eval.py)
+├── transfer/     sim → real UR5e:  MoveIt EE executor + transfer orchestration
+├── scripts/      orchestration + utils (run_robot_pipeline.sh, load_in_isaaclab.sh, vram_guard.sh)
+├── docs/         TWIN_TAMP.md (the TAMP + parallel-twin layer)
+└── third_party/  upstream submodules (sam-3d-objects, IsaacLab)
+```
+
+### Key files
 | File | Role |
 |------|------|
-| `pipeline/run_robot_pipeline.sh` | one-command end-to-end orchestrator |
-| `pipeline/capture_rgbd_ros1.py` | ROS1 RGBD + extrinsics capture (runs on the robot) |
-| `pipeline/gemini_manip.py` | VLM manipulable-object detection (general / targeted) |
-| `pipeline/object_focus.py` | keep central/reachable objects |
-| `pipeline/depth_scale.py` | robust metric sizing from depth |
-| `pipeline/sam3d_to_scene.py` | SAM 3D → metric/calibrated scene + QA self-repair |
-| `pipeline/render_compare.py` | Open3D render-and-compare QA (silhouette IoU) |
-| `pipeline/primitive_fit.py` | close-shape fallback primitives (fallback only) |
-| `pipeline/depth_mesh.py` | depth-carve fallback (real measured surface) |
-| `pipeline/hunyuan_demo.py` | Hunyuan3D-2 backend + shared mesh/scene utilities |
-| `pipeline/demo.py` | SAM 3D backend (Gemini+SAM2 → SAM 3D) |
-| `pipeline/vram_guard.sh` / `load_in_isaaclab.sh` | VRAM guard + guarded Isaac Sim loader |
-| `pipeline/inspect_meshes.py` / `measure_objects.py` / `tune_qa.py` | diagnostics |
-| `isaaclab/real2sim_franka.py` | Isaac Lab scene: spawn assets, calibrated placement, physics, demos |
+| `scripts/run_robot_pipeline.sh` | one-command end-to-end orchestrator |
+| `perception/capture_rgbd_ros1.py` | ROS1 RGBD + extrinsics capture (on the robot) |
+| `perception/gemini_manip.py` | VLM manipulable-object detection (general / targeted) |
+| `perception/sam3d_to_scene.py` | SAM 3D → metric/calibrated scene + QA self-repair |
+| `perception/render_compare.py` | Open3D render-and-compare QA (silhouette IoU) |
+| `perception/demo.py` / `hunyuan_demo.py` | SAM 3D / Hunyuan3D-2 reconstruction backends |
+| `tamp/tamp_plan.py` | language → grounded goal + ordered pick/place actions (Gemini) |
+| `tamp/twin_plan_search.py` | goal → N candidate plans (vary order + grasp + placement) |
+| `tamp/ee_geometry.py` | **shared** grasp/place geometry (single source of truth) |
+| `tamp/tamp_to_ee.py` / `cgn_to_ee_traj.py` | plan → EE-trajectory compilers |
+| `twin/real2sim_franka.py` | Isaac Lab scene + `--replay_plan` multi-step exec + verdict |
+| `twin/twin_plan_eval.py` | **parallel task-plan search** (N envs, physics-scored, pick winner) |
+| `transfer/ur5e_ee_executor.py` | MoveIt EE executor on the real UR5e |
+
+See **`docs/TWIN_TAMP.md`** for the TAMP + parallel-twin layer.
 
 ## Upstream repos (git submodules)
 

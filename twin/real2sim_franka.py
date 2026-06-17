@@ -503,8 +503,8 @@ if args_cli.use_extrinsics:
 #     sam-3d-objects/ee_geometry.py  (SINGLE SOURCE OF TRUTH — imported by both
 #     this twin export and the standalone TAMP motion compiler tamp_to_ee.py).
 import sys as _sys
-if "/home/aoloo/sam-3d-objects" not in _sys.path:
-    _sys.path.insert(0, "/home/aoloo/sam-3d-objects")
+if "/home/aoloo/real2sim2real/tamp" not in _sys.path:
+    _sys.path.insert(0, "/home/aoloo/real2sim2real/tamp")
 from ee_geometry import GraspCfg as _GraspCfg, compute_pick_place_trajectory as _compute_ppt
 
 

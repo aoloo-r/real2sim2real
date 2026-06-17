@@ -47,7 +47,7 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
-sys.path.insert(0, "/home/aoloo/sam-3d-objects")
+sys.path.insert(0, "/home/aoloo/real2sim2real/tamp")
 import ee_geometry
 
 VESSEL_KW = ("cup", "bowl", "plate", "mug", "glass", "container", "dish")
