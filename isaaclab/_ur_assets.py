@@ -34,14 +34,15 @@ HAND_E_FINGER_JOINTS = ("finger_joint_left", "finger_joint_right")
 HAND_E_FINGER_OPEN_M = 0.0
 HAND_E_FINGER_CLOSED_M = 0.025
 
-# Tucked, gripper-down home pose for the pedestal-mounted lab setup.
-# Replace with exact teach-pendant readout when measured.
+# Gripper-DOWN home pose (tool0 points at the table, like the real arm's working
+# pose). Verified by render (/tmp/ur5e_pose_down_B.png): UR5e bent, 2F-85 fingers
+# pointing straight down. The previous pose pointed the gripper forward.
 UR5E_HOME_JOINTS = {
     "shoulder_pan_joint": 0.0,
-    "shoulder_lift_joint": -1.5708,
-    "elbow_joint": -1.5708,
-    "wrist_1_joint": -1.5708,
-    "wrist_2_joint": 1.5708,
+    "shoulder_lift_joint": -1.0472,   # -60 deg
+    "elbow_joint": 1.5708,            # +90 deg
+    "wrist_1_joint": -2.0944,         # -120 deg
+    "wrist_2_joint": -1.5708,         # -90 deg
     "wrist_3_joint": 0.0,
 }
 
