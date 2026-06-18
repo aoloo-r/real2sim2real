@@ -58,7 +58,7 @@ real2sim2real/
 ├── twin/         Isaac Lab digital twin:  scene loader, multi-step replay + per-step
 │                 verdict, and the PARALLEL task-plan search engine (twin_plan_eval.py)
 ├── transfer/     sim → real UR5e:  MoveIt EE executor + transfer orchestration
-├── scripts/      orchestration + utils (run_robot_pipeline.sh, load_in_isaaclab.sh, vram_guard.sh)
+├── scripts/      orchestration + utils (run_robot_pipeline.sh, load_in_isaaclab.sh)
 ├── docs/         TWIN_TAMP.md (the TAMP + parallel-twin layer)
 ├── engines/      local symlinks to the live heavy installs (gitignored, this machine):
 │                   IsaacLab/ -> ~/IsaacLab,  sam-3d-objects/ -> ~/sam-3d-objects,

@@ -18,9 +18,6 @@ if [ ! -f "$SCENE/scene_layout.json" ]; then
   echo "ERROR: no scene_layout.json in $SCENE"; exit 2
 fi
 
-bash "$HERE/vram_guard.sh" 6500 "Isaac Lab real2sim sim" || {
-  echo "Not launching Isaac Lab (insufficient VRAM)."; exit 3; }
-
 export DISPLAY="${DISPLAY:-:1}"   # always show the GUI (user preference)
 cd "${ISAACLAB_DIR:-$HOME/IsaacLab}"
 exec ./isaaclab.sh -p scripts/real2sim_franka.py \

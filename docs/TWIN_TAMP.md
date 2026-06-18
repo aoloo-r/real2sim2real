@@ -28,7 +28,7 @@ LANGUAGE ──► TASK PLAN ──► N CANDIDATE PLANS ──► PARALLEL SEAR
 
 ### `perception/` — capture → detect (Gemini) → reconstruct (SAM 3D) → QA → `scene_layout.json`
 ### `transfer/` — sim → real UR5e (`ur5e_ee_executor.py` MoveIt, `transfer_to_robot.sh`)
-### `scripts/` — orchestration (`run_robot_pipeline.sh`, `load_in_isaaclab.sh`, `vram_guard.sh`)
+### `scripts/` — orchestration (`run_robot_pipeline.sh`, `load_in_isaaclab.sh`)
 
 ### `twin/` (runs via `./isaaclab.sh -p`, Isaac env)
 | File | Role |

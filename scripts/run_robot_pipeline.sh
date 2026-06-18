@@ -109,8 +109,6 @@ if [ "$BACKEND" = "sam3d" ]; then
   echo "==> [4/5] Reconstruct (Gemini -> SAM2 -> SAM 3D, focus) -> $OUT"
   # SAM 3D peaks ~18-20GB (spconv/SLAT sparse decoding) — effectively needs the
   # card to itself; pause other GPU jobs first.
-  bash "$SAM_DIR/vram_guard.sh" 18000 "SAM 3D reconstruction" || {
-    echo "Aborting reconstruct stage (insufficient VRAM)."; exit 3; }
   RAW="${OUT}_sam3d_raw"
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True "$SAM3D_PY" demo.py \
     --image_path "$DEST/rgb.png" --output_dir "$RAW" \
@@ -122,8 +120,6 @@ if [ "$BACKEND" = "sam3d" ]; then
     --max_objects "${MAX_OBJECTS:-4}"
 else
   echo "==> [4/5] Reconstruct (Gemini -> SAM2 -> Hunyuan3D-2, focus + QA) -> $OUT"
-  bash "$SAM_DIR/vram_guard.sh" 7000 "Hunyuan reconstruction" || {
-    echo "Aborting reconstruct stage (insufficient VRAM)."; exit 3; }
   "$HUNYUAN_PY" hunyuan_demo.py \
     --image_path "$DEST/rgb.png" \
     --depth_path "$DEST/depth.npy" \
