@@ -28,8 +28,7 @@ Stages:
    calibrated placement, orientation (incl. flip-open-side-up for dishes), and a
    **render-and-compare QA gate** with **self-repair** fallbacks
    (depth-carve → close primitive) only when SAM 3D genuinely fails.
-4. **Load Isaac Sim** – open the scene in the GUI, VRAM-guarded so it can't
-   OOM-crash other GPU jobs (`load_in_isaaclab.sh`, `vram_guard.sh`).
+4. **Load Isaac Sim** – open the scene in the GUI (`load_in_isaaclab.sh`).
 
 Backend is swappable: `BACKEND=sam3d` (default) or `BACKEND=hunyuan`.
 
