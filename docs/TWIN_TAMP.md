@@ -50,11 +50,25 @@ python tamp/twin_plan_search.py --task_plan /tmp/task_plan.json --n 8 --out /tmp
 # 3. PARALLEL SEARCH in the twin -> ranked, winner (headless = fast; GUI = watch the N envs)
 ./isaaclab.sh -p twin/twin_plan_eval.py --scene_dir <out> --capture_dir <cap> \
     --candidates /tmp/candidates.json [--headless]
-# 4. execute the winning plan (compile its EE trajectories, then replay)
-#    (compile winner -> plan_manifest.json, then:)
+# 3b. RESOLVE the grasp orientation against the REAL UR5e (cuRobo ur5e.yml IK, scene-
+#     aware) and bake it into the trajectory -> the twin and the real robot then run
+#     the SAME orientation verbatim (sim == real grasp).
+python twin/resolve_orientation.py --traj <ee.json> --out <ee_resolved.json> --tcp_offset 0.187
+# 4. execute the RESOLVED trajectory — sim twin (replay) AND real robot run it verbatim
 ./isaaclab.sh -p twin/real2sim_franka.py --scene_dir <out> --capture_dir <cap> \
-    --robot franka --sim_attach --replay_plan <plan_manifest.json>
+    --robot franka --sim_attach --replay_plan <plan_manifest.json>   # resolved files
 ```
+
+## Sim ≡ Real invariant (grasp orientation)
+The EE trajectory is the **single source of truth**: every TCP pose + orientation is
+fixed up front and **both** the sim twin and the real `ur5e_ee_executor.py` execute it
+**verbatim** — no runtime improvisation. The grasp orientation is resolved **once** by
+`twin/resolve_orientation.py` against the real UR5e's kinematics (cuRobo `ur5e.yml` IK,
+table+object collision from the trajectory), so the orientation validated in sim is the
+one the robot performs. (This fixes the bug Xiaohan caught: the old executor searched
+orientations at runtime — straight-down → lean → tilt — so the sim grasped one face and
+the real robot another. That search now happens once, offline, baked in.) Use the **same
+`--tcp_offset`** (UR5e+HandE ≈ 0.187) in the resolver and the executor.
 
 ## Scoring (twin_plan_eval)
 - **goals** — each object settled within its target's footprint

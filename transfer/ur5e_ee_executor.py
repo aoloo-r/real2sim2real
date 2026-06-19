@@ -228,12 +228,14 @@ def main():
         base_q = wp["quaternion"]                        # commanded orientation [w,x,y,z]
         is_grasp = label in ("hover_object", "descend_to_grasp", "lower_to_place")
 
-        # Reachability search: try the commanded orientation first, then leans/
-        # tilts, until MoveIt can plan one. While holding the object, try the
-        # already-grasped wrist orientation FIRST so we don't twist it.
-        cands = candidate_quats(base_q, tip[0], tip[1], is_grasp)
-        if held_q is not None:
-            cands = [("hold", list(held_q))] + cands
+        # VERBATIM: execute EXACTLY the commanded orientation. It was resolved ONCE
+        # upstream against the real UR5e's kinematics (twin/resolve_orientation.py)
+        # and is the SAME orientation the sim twin executed -> sim and real perform
+        # the IDENTICAL grasp. NO runtime lean/tilt improvisation (that is exactly
+        # what made sim grasp the side and real the back). If this orientation can't
+        # be planned, FAIL the waypoint (re-plan in the twin) instead of silently
+        # tilting to a different grasp. candidate_quats() is kept for reference only.
+        cands = [("commanded", list(base_q))]
 
         plan = None; jt = []; how = ""; used = ""; chosen_q = None
         for nm, q in cands:
