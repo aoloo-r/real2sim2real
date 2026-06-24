@@ -113,6 +113,15 @@ def quat_to_vec4(q):
     return wp.vec4(q[0], q[1], q[2], q[3])
 
 
+def qmul(a, b):
+    """Hamilton product, (x,y,z,w) convention (matches warp quats)."""
+    ax, ay, az, aw = a; bx, by, bz, bw = b
+    return np.array([aw*bx + ax*bw + ay*bz - az*by,
+                     aw*by - ax*bz + ay*bw + az*bx,
+                     aw*bz + ax*by - ay*bx + az*bw,
+                     aw*bw - ax*bx - ay*by - az*bz])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene_dir", required=True)
@@ -130,6 +139,9 @@ def main():
                     help="object id to place the target into/onto after lifting (-1 = pick+lift only)")
     ap.add_argument("--grip_max", type=float, default=0.08,
                     help="max gripper APERTURE in m (Franka hand=0.08; real Robotiq Hand-E=0.05)")
+    ap.add_argument("--grasp_mode", default="center", choices=["center", "yaw"],
+                    help="center=close across object center (search lateral dx); "
+                         "yaw=grasp at center and SEARCH wrist yaw (find the narrow-axis grip)")
     args = ap.parse_args()
     grip_open_joint = args.grip_max / 2.0          # per-finger joint = half the aperture
 
@@ -292,10 +304,18 @@ def main():
     st = model_single.state(); newton.eval_fk(model_single, model_single.joint_q, model_single.joint_qd, st)
     ee_tf = wp.transform(*st.body_q.numpy()[EE])
     DOWN = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), np.pi)
+    DOWN_NP = np.array([1.0, 0.0, 0.0, 0.0])           # Rx(pi) as (x,y,z,w)
+    # per-world grasp orientation: DOWN, optionally yawed about world Z (yaw search)
+    if args.grasp_mode == "yaw":
+        yaws = np.linspace(0.0, np.pi, args.world_count)
+    else:
+        yaws = np.zeros(args.world_count)
+    grasp_q = [qmul(np.array([0.0, 0.0, np.sin(y/2), np.cos(y/2)]), DOWN_NP) for y in yaws]
+    grasp_q4 = [quat_to_vec4(q) for q in grasp_q]
     pos_obj = ik.IKObjectivePosition(link_index=EE, link_offset=wp.vec3(0.0, 0.0, 0.0),
         target_positions=wp.array([wp.transform_get_translation(ee_tf)] * args.world_count, dtype=wp.vec3))
     rot_obj = ik.IKObjectiveRotation(link_index=EE, link_offset_rotation=wp.quat_identity(),
-        target_rotations=wp.array([quat_to_vec4(DOWN)] * args.world_count, dtype=wp.vec4))
+        target_rotations=wp.array(grasp_q4, dtype=wp.vec4))
     ik_dofs = model_single.joint_coord_count           # 9 (robot only)
     # per-problem joint limits: tile the single robot's limits across worlds (numpy ->
     # warp, avoiding warp 2D slicing).
@@ -316,7 +336,7 @@ def main():
 
     def set_targets(positions, grip):
         pos_obj.set_target_positions(wp.array(positions, dtype=wp.vec3))
-        rot_obj.set_target_rotations(wp.array([quat_to_vec4(DOWN)] * args.world_count, dtype=wp.vec4))
+        rot_obj.set_target_rotations(wp.array(grasp_q4, dtype=wp.vec4))
         ik_solver.step(joint_q_ik, joint_q_ik, iterations=48)
         jt = control.joint_target_q.reshape((args.world_count, ctrl_per_world))
         wp.copy(dest=jt[:, :7], src=joint_q_ik[:, :7])
@@ -367,7 +387,9 @@ def main():
                           bq[w * bodies_per_world + object_body_local, 1]]
                          for w in range(args.world_count)])
 
-    if args.world_count == 1:
+    if args.grasp_mode == "yaw":
+        offs = np.zeros(args.world_count)             # yaw search: grasp at center XY
+    elif args.world_count == 1:
         offs = np.array([tgt["radius"] * 0.3])        # single env: a known-good slight +offset
     else:
         offs = np.linspace(-tgt["radius"] * 0.6, tgt["radius"] * 0.6, args.world_count)
@@ -394,14 +416,17 @@ def main():
     print(f"  NEWTON HYDROELASTIC GRASP  (N={args.world_count}, target '{tgt['label']}', "
           f"lift phase {t_lift:.1f}s)")
     print("=" * 64)
+    def _param(w):
+        return (f"yaw={np.degrees(yaws[w]):5.0f}deg" if args.grasp_mode == "yaw"
+                else f"dx={offs[w]*100:+.1f}cm")
     for rank, w in enumerate(order, 1):
         pk = float(max_z[w] - z_rest[w]); fin = float(z_lift[w] - z_rest[w])
         tag = "HELD" if pk > 0.04 else ("partial" if pk > 0.01 else "slip")
-        print(f"  #{rank}  world {w}  dx={offs[w]*100:+.1f}cm  peak +{pk*100:4.1f}cm  "
+        print(f"  #{rank}  world {w}  {_param(w)}  peak +{pk*100:4.1f}cm  "
               f"final +{fin*100:4.1f}cm  [{tag}]")
     best = int(order[0])
     print("-" * 64)
-    print(f"  WINNER: world {best} dx={offs[best]*100:+.1f}cm peak +{float(max_z[best]-z_rest[best])*100:.1f}cm")
+    print(f"  WINNER: world {best} {_param(best)} peak +{float(max_z[best]-z_rest[best])*100:.1f}cm")
     print(f"  {int((max_z-z_rest > 0.04).sum())}/{args.world_count} held (peak>4cm)")
     print("=" * 64, flush=True)
 
