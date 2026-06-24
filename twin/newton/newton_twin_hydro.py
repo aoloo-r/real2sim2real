@@ -1,4 +1,11 @@
-"""Newton-native twin — increment 3: HYDROELASTIC grasp (grasps that hold).
+"""Newton-native twin — increment 4: HYDROELASTIC grasp on the ACTUAL SAM3D meshes.
+
+Increment 3 grasped a cylinder stand-in; this loads the real reconstructed mesh.obj for
+the target (free, hydroelastic, SDF-backed) and for the other scene objects (real meshes
+as context — physical convex colliders by default, or visual-only via --obstacles). Meshes
+are metric (physical_scale_baked) and recentred to a z-up rest pose; stacking is inferred
+so an object resting on another (e.g. sphere on tray) starts at the right height.
+
 
 Ports the working contact recipe from Newton's `robot_panda_hydro` example (the one
 that grasps a cup) into our twin: gripper PAD meshes on the fingers, SDF + hydroelastic
@@ -24,6 +31,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
+import trimesh
 import warp as wp
 from pxr import Usd
 
@@ -31,6 +39,7 @@ import newton
 import newton.ik as ik
 import newton.usd
 from newton.geometry import HydroelasticSDF
+from newton.viewer import ViewerGL, ViewerNull
 
 
 def load_scene_objects(scene_dir, capture_dir, base_frame="ur5e_base_link"):
@@ -49,10 +58,55 @@ def load_scene_objects(scene_dir, capture_dir, base_frame="ur5e_base_link"):
         P = T @ np.array([pc[0], pc[1], pc[2], 1.0])
         w = max(0.02, min(0.40, float(di.get("physical_width_m") or o.get("physical_size_m") or 0.06)))
         h = max(0.02, min(0.40, float(di.get("physical_height_m") or o.get("physical_size_m") or 0.06)))
+        mp = o.get("mesh_path")
+        mesh_abs = os.path.join(scene_dir, mp) if mp else None
+        col = o.get("display_color") or [0.6, 0.6, 0.6]
+        radius, height = w / 2.0, h
+        if mesh_abs and os.path.exists(mesh_abs):
+            try:                       # mesh extent is ground truth; depth height can be wrong
+                ext = _mesh_extent(mesh_abs)
+                radius, height = float(max(ext[0], ext[1]) / 2.0), float(ext[2])
+            except Exception:
+                pass
         objs.append({"id": o["id"], "label": str(o.get("label", "")),
-                     "x": float(P[0]), "y": float(P[1]),
-                     "radius": w / 2.0, "height": h})
+                     "x": float(P[0]), "y": float(P[1]), "real_z": float(P[2]),
+                     "radius": radius, "height": height,
+                     "mesh_path": mesh_abs, "color": [float(c) for c in col[:3]]})
+    # stacking: a small object whose footprint sits inside a larger, flatter one AND is
+    # physically higher (larger base-frame z) rests ON it -> its base_z is that support's top.
+    for o in objs:
+        o["base_z"] = 0.0
+    for a in objs:
+        for b in objs:
+            if a is b or b["radius"] <= a["radius"]:
+                continue
+            d = ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+            if d < (b["radius"] - 0.4 * a["radius"]) and a["real_z"] > b["real_z"] + 0.005:
+                a["base_z"] = b["height"]
     return objs
+
+
+def _mesh_extent(path):
+    m = trimesh.load(path, process=False)
+    if isinstance(m, trimesh.Scene):
+        m = trimesh.util.concatenate([g for g in m.geometry.values()])
+    v = np.asarray(m.vertices, float)
+    return v.max(0) - v.min(0)
+
+
+def load_obj_mesh(path, recenter=True):
+    """SAM3D mesh.obj -> newton.Mesh. Vertices are already metric (physical_scale_baked).
+    Recenter to XY-center + base at local z=0 so placement is deterministic (z-up rest pose)."""
+    m = trimesh.load(path, process=False)
+    if isinstance(m, trimesh.Scene):
+        m = trimesh.util.concatenate([g for g in m.geometry.values()])
+    V = np.asarray(m.vertices, dtype=np.float32).copy()
+    F = np.asarray(m.faces, dtype=np.int32).reshape(-1)
+    if recenter and len(V):
+        V[:, 0] -= (V[:, 0].min() + V[:, 0].max()) * 0.5
+        V[:, 1] -= (V[:, 1].min() + V[:, 1].max()) * 0.5
+        V[:, 2] -= V[:, 2].min()
+    return newton.Mesh(V, F), V
 
 
 def quat_to_vec4(q):
@@ -66,6 +120,12 @@ def main():
     ap.add_argument("--target_id", type=int, default=2)
     ap.add_argument("--world_count", type=int, default=8)
     ap.add_argument("--base_frame", default="ur5e_base_link")
+    ap.add_argument("--viewer", default="gl", choices=["gl", "null"],
+                    help="gl = live GUI window (DISPLAY :1); null = headless")
+    ap.add_argument("--hold", type=float, default=20.0,
+                    help="seconds to keep the GUI open at the end for inspection")
+    ap.add_argument("--obstacles", default="collide", choices=["collide", "visual", "none"],
+                    help="other scene objects: physical colliders, visual-only, or omitted")
     args = ap.parse_args()
 
     objs = load_scene_objects(args.scene_dir, args.capture_dir, args.base_frame)
@@ -136,15 +196,41 @@ def main():
     builder.add_shape_mesh(body=lfi, mesh=pad_mesh, xform=pad_xform, cfg=cfg_mesh)
     builder.add_shape_mesh(body=rfi, mesh=pad_mesh, xform=pad_xform, cfg=cfg_mesh)
 
-    # IK model = ROBOT ONLY (deepcopy BEFORE adding the object) -> joint_coord_count = 9
+    # IK model = ROBOT ONLY (deepcopy BEFORE adding any scene object) -> joint_coord_count = 9
     model_single = copy.deepcopy(builder).finalize()
 
-    # now add the target object (a free body) to the per-world builder
-    obj_z0 = tgt["height"] / 2.0 + 0.002
+    # --- TARGET: the actual SAM3D mesh as a free, hydroelastic body ---
+    tgt_mesh, tgt_V = load_obj_mesh(tgt["mesh_path"])
+    ext = (tgt_V.max(0) - tgt_V.min(0)).astype(float)
+    tgt["radius"] = float(max(ext[0], ext[1]) / 2.0)   # actual mesh extent drives the grasp
+    tgt["height"] = float(ext[2])
+    tgt_mesh.build_sdf(max_resolution=SDF_RES, narrow_band_range=SDF_BAND, margin=shape_cfg.gap)
+    obj_z0 = tgt["base_z"] + 0.002                       # mesh base rests on its support
     obj_body = builder.add_body(label="target",
                                xform=wp.transform(wp.vec3(tgt["x"], tgt["y"], obj_z0), wp.quat_identity()))
-    builder.add_shape_cylinder(obj_body, radius=tgt["radius"], half_height=tgt["height"] / 2.0, cfg=cfg_prim)
+    builder.add_shape_mesh(obj_body, mesh=tgt_mesh, cfg=cfg_mesh,
+                           color=wp.vec3(*tgt["color"]), label="target_mesh")
     object_body_local = obj_body
+    print(f"[HYDRO] target mesh '{tgt['label']}': {len(tgt_V)} verts, "
+          f"extent {ext.round(3)}, base_z={tgt['base_z']:.3f}")
+
+    # --- OTHER objects: their real SAM3D meshes as scene context ---
+    obstacle_shapes = []
+    if args.obstacles != "none":
+        ocfg = replace(shape_cfg, has_shape_collision=(args.obstacles == "collide"))
+        for o in objs:
+            if o["id"] == tgt["id"] or not o["mesh_path"] or not os.path.exists(o["mesh_path"]):
+                continue
+            om, _ = load_obj_mesh(o["mesh_path"])
+            sidx = builder.add_shape_mesh(
+                -1, xform=wp.transform(wp.vec3(o["x"], o["y"], o["base_z"]), wp.quat_identity()),
+                mesh=om, cfg=ocfg, color=wp.vec3(*o["color"]), label="obs_%d" % o["id"])
+            obstacle_shapes.append(sidx)
+        if args.obstacles == "collide" and obstacle_shapes:
+            builder.approximate_meshes(method="convex_hull", shape_indices=obstacle_shapes,
+                                       keep_visual_shapes=True)
+        print(f"[HYDRO] loaded {len(obstacle_shapes)} context object meshes "
+              f"({args.obstacles})")
 
     bodies_per_world = builder.body_count
     scene = newton.ModelBuilder()
@@ -155,6 +241,22 @@ def main():
 
     state_0 = model.state(); state_1 = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    # live GUI viewer (shows on DISPLAY :1) or headless
+    if args.viewer == "gl":
+        viewer = ViewerGL()
+        viewer.set_model(model)
+        import math as _m
+        ncol = int(_m.ceil(_m.sqrt(args.world_count)))
+        nrow = int(_m.ceil(args.world_count / ncol))
+        viewer.set_world_offsets(wp.vec3(1.2, 1.2, 0.0))
+        # frame the whole grid: aim at its center, stand back ~2.5m up ~1.8m
+        cx = tgt["x"] + 1.2 * (ncol - 1) / 2.0
+        cy = tgt["y"] + 1.2 * (nrow - 1) / 2.0
+        viewer.set_camera(wp.vec3(cx - 1.8, cy - 2.4, 1.8), -28, 60)
+    else:
+        viewer = ViewerNull(num_frames=10**9)
+        viewer.set_model(model)
 
     coll = newton.CollisionPipeline(model, reduce_contacts=True, broad_phase="explicit",
                                     sdf_hydroelastic_config=HydroelasticSDF.Config(output_contact_surface=False))
@@ -213,6 +315,9 @@ def main():
     collide_every = 2
     max_z = np.array([obj_z0] * args.world_count)
 
+    sim_clock = [0.0]
+    render_every = 10   # render one frame per 10 sub-steps (~60 fps view)
+
     def sim(n):
         nonlocal state_0, state_1, max_z
         for k in range(n):
@@ -221,6 +326,15 @@ def main():
             state_0.clear_forces()
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
+            sim_clock[0] += dt
+            if k % render_every == 0:
+                viewer.begin_frame(sim_clock[0])
+                viewer.log_state(state_0)
+                try:
+                    viewer.log_contacts(contacts, state_0)
+                except Exception:
+                    pass
+                viewer.end_frame()
         bq = state_0.body_q.numpy()
         zs = np.array([bq[w * bodies_per_world + object_body_local, 2] for w in range(args.world_count)])
         max_z = np.maximum(max_z, zs)
@@ -231,10 +345,11 @@ def main():
         return np.array([bq[w * bodies_per_world + object_body_local, 2] for w in range(args.world_count)])
 
     offs = np.linspace(-tgt["radius"] * 0.6, tgt["radius"] * 0.6, args.world_count)
-    gz = tgt["height"] / 2.0 + 0.002
+    gz = tgt["base_z"] + tgt["height"] / 2.0          # grasp at object mid-height
 
     print("[HYDRO] settle..."); set_grip(GRIP_OPEN); sim(120)
     z_rest = obj_z().copy()
+    max_z = z_rest.copy()          # measure peak lift from the SETTLED rest pose, not spawn
     print("[HYDRO] approach...")
     set_targets([wp.vec3(tgt["x"] + float(d), tgt["y"], gz + 0.16) for d in offs], GRIP_OPEN)
     sim(300)
@@ -263,6 +378,13 @@ def main():
     print(f"  WINNER: world {best} dx={offs[best]*100:+.1f}cm peak +{float(max_z[best]-z_rest[best])*100:.1f}cm")
     print(f"  {int((max_z-z_rest > 0.04).sum())}/{args.world_count} held (peak>4cm)")
     print("=" * 64, flush=True)
+
+    # keep the GUI open so the final grasped state can be inspected / orbited
+    if args.viewer == "gl" and args.hold > 0:
+        print(f"[HYDRO] holding GUI open {args.hold:.0f}s — orbit to inspect (Ctrl-C to close)", flush=True)
+        t_end = time.time() + args.hold
+        while time.time() < t_end and viewer.is_running():
+            sim(render_every)
 
 
 if __name__ == "__main__":
