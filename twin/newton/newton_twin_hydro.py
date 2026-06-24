@@ -128,7 +128,10 @@ def main():
                     help="context objects: convex-hull colliders, coacd hollow colliders, visual-only, or omitted")
     ap.add_argument("--place_in", type=int, default=-1,
                     help="object id to place the target into/onto after lifting (-1 = pick+lift only)")
+    ap.add_argument("--grip_max", type=float, default=0.08,
+                    help="max gripper APERTURE in m (Franka hand=0.08; real Robotiq Hand-E=0.05)")
     args = ap.parse_args()
+    grip_open_joint = args.grip_max / 2.0          # per-finger joint = half the aperture
 
     objs = load_scene_objects(args.scene_dir, args.capture_dir, args.base_frame)
     tgt = next((o for o in objs if o["id"] == args.target_id), objs[-1])
@@ -179,8 +182,12 @@ def main():
     builder.approximate_meshes(method="convex_hull", shape_indices=non_finger, keep_visual_shapes=True)
 
     init_q = [-3.68e-03, 2.39e-02, 3.68e-03, -2.3683, -1.29e-04, 2.3922, 0.7855]
-    builder.joint_q[:9] = [*init_q, 0.04, 0.04]
-    builder.joint_target_q[:9] = [*init_q, 0.04, 0.04]
+    builder.joint_q[:9] = [*init_q, grip_open_joint, grip_open_joint]
+    builder.joint_target_q[:9] = [*init_q, grip_open_joint, grip_open_joint]
+    # clamp the finger stroke so the gripper physically can't open past grip_max
+    # (emulates the real Robotiq Hand-E: it can't enclose objects wider than its stroke)
+    builder.joint_limit_upper[7] = grip_open_joint
+    builder.joint_limit_upper[8] = grip_open_joint
     builder.joint_target_ke[:9] = [650.0] * 9
     builder.joint_target_kd[:9] = [100.0] * 9
     builder.joint_effort_limit[:7] = [80.0] * 7
@@ -305,7 +312,7 @@ def main():
                              objectives=[pos_obj, rot_obj, lim_obj], lambda_initial=0.05,
                              jacobian_mode=ik.IKJacobianType.ANALYTIC)
 
-    GRIP_OPEN, GRIP_CLOSE = 0.04, 0.0
+    GRIP_OPEN, GRIP_CLOSE = grip_open_joint, 0.0
 
     def set_targets(positions, grip):
         pos_obj.set_target_positions(wp.array(positions, dtype=wp.vec3))
