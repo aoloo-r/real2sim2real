@@ -124,13 +124,19 @@ def main():
                     help="gl = live GUI window (DISPLAY :1); null = headless")
     ap.add_argument("--hold", type=float, default=20.0,
                     help="seconds to keep the GUI open at the end for inspection")
-    ap.add_argument("--obstacles", default="collide", choices=["collide", "visual", "none"],
-                    help="other scene objects: physical colliders, visual-only, or omitted")
+    ap.add_argument("--obstacles", default="collide", choices=["collide", "coacd", "visual", "none"],
+                    help="context objects: convex-hull colliders, coacd hollow colliders, visual-only, or omitted")
+    ap.add_argument("--place_in", type=int, default=-1,
+                    help="object id to place the target into/onto after lifting (-1 = pick+lift only)")
     args = ap.parse_args()
 
     objs = load_scene_objects(args.scene_dir, args.capture_dir, args.base_frame)
     tgt = next((o for o in objs if o["id"] == args.target_id), objs[-1])
+    place_dest = next((o for o in objs if o["id"] == args.place_in), None) if args.place_in >= 0 else None
     print(f"[HYDRO] target: id={tgt['id']} '{tgt['label']}' r={tgt['radius']:.3f} h={tgt['height']:.3f}")
+    if place_dest is not None:
+        print(f"[HYDRO] place into: id={place_dest['id']} '{place_dest['label']}' "
+              f"@({place_dest['x']:+.3f},{place_dest['y']:+.3f})")
 
     wp.init()
     SDF_RES = 64
@@ -216,8 +222,9 @@ def main():
 
     # --- OTHER objects: their real SAM3D meshes as scene context ---
     obstacle_shapes = []
+    collide_obs = args.obstacles in ("collide", "coacd")
     if args.obstacles != "none":
-        ocfg = replace(shape_cfg, has_shape_collision=(args.obstacles == "collide"))
+        ocfg = replace(shape_cfg, has_shape_collision=collide_obs)
         for o in objs:
             if o["id"] == tgt["id"] or not o["mesh_path"] or not os.path.exists(o["mesh_path"]):
                 continue
@@ -226,8 +233,9 @@ def main():
                 -1, xform=wp.transform(wp.vec3(o["x"], o["y"], o["base_z"]), wp.quat_identity()),
                 mesh=om, cfg=ocfg, color=wp.vec3(*o["color"]), label="obs_%d" % o["id"])
             obstacle_shapes.append(sidx)
-        if args.obstacles == "collide" and obstacle_shapes:
-            builder.approximate_meshes(method="convex_hull", shape_indices=obstacle_shapes,
+        if collide_obs and obstacle_shapes:
+            method = "coacd" if args.obstacles == "coacd" else "convex_hull"
+            builder.approximate_meshes(method=method, shape_indices=obstacle_shapes,
                                        keep_visual_shapes=True)
         print(f"[HYDRO] loaded {len(obstacle_shapes)} context object meshes "
               f"({args.obstacles})")
@@ -250,10 +258,12 @@ def main():
         ncol = int(_m.ceil(_m.sqrt(args.world_count)))
         nrow = int(_m.ceil(args.world_count / ncol))
         viewer.set_world_offsets(wp.vec3(1.2, 1.2, 0.0))
-        # frame the whole grid: aim at its center, stand back ~2.5m up ~1.8m
         cx = tgt["x"] + 1.2 * (ncol - 1) / 2.0
         cy = tgt["y"] + 1.2 * (nrow - 1) / 2.0
-        viewer.set_camera(wp.vec3(cx - 1.8, cy - 2.4, 1.8), -28, 60)
+        if args.world_count == 1:        # single env: close framing on the workspace
+            viewer.set_camera(wp.vec3(cx - 0.55, cy - 0.75, 0.55), -30, 55)
+        else:                            # frame the whole grid from back/up
+            viewer.set_camera(wp.vec3(cx - 1.8, cy - 2.4, 1.8), -28, 60)
     else:
         viewer = ViewerNull(num_frames=10**9)
         viewer.set_model(model)
@@ -263,7 +273,7 @@ def main():
     contacts = coll.contacts()
     solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False, solver="newton",
                                          integrator="implicitfast", cone="elliptic",
-                                         njmax=500, nconmax=500, iterations=15,
+                                         njmax=700, nconmax=700, iterations=15,
                                          ls_iterations=100, impratio=1000.0)
     control = model.control()
     ctrl_size = control.joint_target_q.shape[0]
@@ -344,7 +354,16 @@ def main():
         bq = state_0.body_q.numpy()
         return np.array([bq[w * bodies_per_world + object_body_local, 2] for w in range(args.world_count)])
 
-    offs = np.linspace(-tgt["radius"] * 0.6, tgt["radius"] * 0.6, args.world_count)
+    def obj_xy():
+        bq = state_0.body_q.numpy()
+        return np.array([[bq[w * bodies_per_world + object_body_local, 0],
+                          bq[w * bodies_per_world + object_body_local, 1]]
+                         for w in range(args.world_count)])
+
+    if args.world_count == 1:
+        offs = np.array([tgt["radius"] * 0.3])        # single env: a known-good slight +offset
+    else:
+        offs = np.linspace(-tgt["radius"] * 0.6, tgt["radius"] * 0.6, args.world_count)
     gz = tgt["base_z"] + tgt["height"] / 2.0          # grasp at object mid-height
 
     print("[HYDRO] settle..."); set_grip(GRIP_OPEN); sim(120)
@@ -378,6 +397,41 @@ def main():
     print(f"  WINNER: world {best} dx={offs[best]*100:+.1f}cm peak +{float(max_z[best]-z_rest[best])*100:.1f}cm")
     print(f"  {int((max_z-z_rest > 0.04).sum())}/{args.world_count} held (peak>4cm)")
     print("=" * 64, flush=True)
+
+    # --- PLACE: carry the grasped target over the destination, lower, release ---
+    if place_dest is not None:
+        dxp, dyp = place_dest["x"], place_dest["y"]
+        carry_z = gz + 0.22                                   # keep the lift height while traversing
+        place_z = place_dest["base_z"] + place_dest["height"] + tgt["height"] / 2.0 + 0.03
+        print("[HYDRO] carry...")
+        set_targets([wp.vec3(dxp + float(d), dyp, carry_z) for d in offs], GRIP_CLOSE)
+        sim(360)
+        print("[HYDRO] lower...")
+        set_targets([wp.vec3(dxp + float(d), dyp, place_z) for d in offs], GRIP_CLOSE)
+        sim(240)
+        print("[HYDRO] release..."); set_grip(GRIP_OPEN); sim(120)
+        print("[HYDRO] retreat...")
+        set_targets([wp.vec3(dxp + float(d), dyp, carry_z + 0.08) for d in offs], GRIP_OPEN)
+        sim(180)
+        print("[HYDRO] settle place..."); sim(240)
+        fxy, fz = obj_xy(), obj_z()
+        dxy = np.array([dxp, dyp])
+        rim = place_dest["radius"] + tgt["radius"]
+        top = place_dest["base_z"] + place_dest["height"] + tgt["height"]
+        print("\n" + "=" * 64)
+        print(f"  NEWTON PICK-AND-PLACE  ('{tgt['label']}' -> '{place_dest['label']}')")
+        print("=" * 64)
+        nplaced = 0
+        for w in range(args.world_count):
+            dist = float(np.linalg.norm(fxy[w] - dxy))
+            placed = dist < rim and fz[w] < top + 0.02
+            nplaced += int(placed)
+            print(f"  world {w}  dx={offs[w]*100:+.1f}cm  xy-from-dest {dist*100:4.1f}cm  "
+                  f"z={fz[w]*100:4.1f}cm  [{'PLACED' if placed else 'missed'}]")
+        print("-" * 64)
+        print(f"  {nplaced}/{args.world_count} placed in '{place_dest['label']}' "
+              f"(within {rim*100:.0f}cm of center & resting)")
+        print("=" * 64, flush=True)
 
     # keep the GUI open so the final grasped state can be inspected / orbited
     if args.viewer == "gl" and args.hold > 0:
