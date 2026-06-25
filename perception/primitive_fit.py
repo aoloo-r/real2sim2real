@@ -19,8 +19,10 @@ import trimesh
 ELLIPSOID_KW = ("lemon", "lime", "ball", "apple", "orange", "fruit", "egg",
                 "tomato", "onion", "potato", "sphere", "round", "peach", "plum",
                 "kiwi", "avocado", "grape", "mango", "pear")
-CYLINDER_KW = ("cup", "mug", "glass", "tumbler", "can", "bottle", "jar", "vase",
-               "tin", "thermos", "flask", "tube", "roll")
+# hollow open vessels -> grasped at the RIM (need a real cavity, not a solid)
+CUP_KW = ("cup", "mug", "glass", "tumbler", "jar", "vase", "beaker")
+# solid-ish round columns -> grasped on the OUTSIDE wall (solid is fine)
+CYLINDER_KW = ("can", "bottle", "tin", "thermos", "flask", "tube", "roll", "bin")
 DISH_KW = ("bowl", "plate", "dish", "saucer", "tray", "container", "platter", "lid")
 BOX_KW = ("box", "case", "carton", "block", "book", "phone", "tablet", "wallet",
           "pack", "brick")
@@ -32,6 +34,8 @@ def category_for_label(label: str):
     ll = (label or "").lower()
     if any(k in ll for k in ELLIPSOID_KW):
         return "ellipsoid"
+    if any(k in ll for k in CUP_KW):
+        return "cup"
     if any(k in ll for k in CYLINDER_KW):
         return "cylinder"
     if any(k in ll for k in DISH_KW):
@@ -45,6 +49,22 @@ def make_cylinder(diameter, height, sections=48):
     """Upright cylinder (cup/can/bottle approximation), bottom at z=0."""
     m = trimesh.creation.cylinder(radius=max(diameter, 1e-3) / 2.0,
                                   height=max(height, 1e-3), sections=sections)
+    m.apply_translation([0, 0, -m.bounds[0][2]])
+    return m
+
+
+def make_cup(diameter, height, wall=0.004, sections=48):
+    """Hollow open cup/mug (surface of revolution), bottom at z=0. A real cavity so
+    the gripper can straddle the rim wall — NOT a solid cylinder."""
+    R = max(diameter, 1e-3) / 2.0
+    H = max(height, 1e-3)
+    w = min(max(wall, 0.003), 0.4 * R)      # wall thickness
+    floor = min(0.10 * H, 0.02)             # inner floor height
+    profile = [
+        (0.0, 0.0), (R, 0.0), (R, H),                 # outer: bottom -> rim
+        (R - w, H), (R - w, floor), (0.0, floor),     # inner: rim -> raised floor
+    ]
+    m = _revolve(profile, sections)
     m.apply_translation([0, 0, -m.bounds[0][2]])
     return m
 
@@ -181,6 +201,10 @@ def build_primitive(category, extents, label=""):
         depth_frac = 0.42 if ("bowl" in ll or "container" in ll) else 0.16
         height = max(ez, diameter * depth_frac)
         return make_dish(diameter, height, concave=True)
+    if category == "cup":
+        diameter = min(ex, ey)          # rim diameter (footprint)
+        height = max(ez, max(ex, ey))   # tall axis
+        return make_cup(diameter, height)
     if category == "cylinder":
         diameter = min(ex, ey)          # rim diameter (footprint)
         height = max(ez, max(ex, ey))   # tall axis

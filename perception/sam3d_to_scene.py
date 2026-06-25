@@ -198,6 +198,9 @@ def main():
                     m = None
                 if m is None:
                     m = build_primitive("dish", (physical_size, physical_size, 0.0), labels[i])
+            elif cat == "cup":
+                # hollow open cup sized to footprint width x tallest dim -> rim-graspable
+                m = build_primitive("cup", (dw, dw, physical_size), labels[i])
             elif cat == "cylinder":
                 m = build_primitive(cat, (dw, dh, physical_size), labels[i])
             else:                                # ellipsoid / box
@@ -245,15 +248,21 @@ def main():
 
         builders = {"sam3d": cand_sam3d, "depthcarve": cand_depthcarve,
                     "primitive": cand_primitive, "cylinder": cand_cylinder}
-        # Always prefer the REAL SAM 3D reconstruction (no predefining shapes);
-        # cand_sam3d flips dishes open-side-up. Fall back only if SAM 3D fails QA.
-        # For THIN/elongated objects (data-measured), the clean cylinder replaces the
-        # depth-carve blob (which has decent IoU but wrong 3D shape).
+        # Reconstruction choice. SAM 3D's SILHOUETTE can pass QA while its 3D shape is
+        # wrong (solid cup/bowl with no cavity, fruit blown into a blob) -> for the
+        # round/hollow categories it reliably botches, PREFER the clean primitive sized
+        # to the depth measurement (recognizable AND graspable: hollow cup/bowl, ellipsoid
+        # fruit). SAM 3D stays first for everything else (boxes, complex/unknown shapes).
         _dw = dri.get("physical_width_m") or physical_size
         _dh = dri.get("physical_height_m") or physical_size
         _elong = (max(_dw, _dh) >= 0.08 and min(_dw, _dh)/max(_dw, _dh, 1e-6) <= 0.45)
         _fb = (["cylinder"] if _elong else fallbacks)
-        order = ["sam3d"] + (_fb if (args.qa and pos is not None) else [])
+        _cat = category_for_label(labels[i])
+        _prefer_prim = _cat in ("ellipsoid", "cup", "dish")
+        if _prefer_prim:
+            order = ["primitive", "sam3d"] + (_fb if (args.qa and pos is not None) else [])
+        else:
+            order = ["sam3d"] + (_fb if (args.qa and pos is not None) else [])
 
         # ---- Self-repair: try candidates in order, re-QA, keep best; accept first pass ----
         best = None
