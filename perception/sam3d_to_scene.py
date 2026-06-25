@@ -248,21 +248,16 @@ def main():
 
         builders = {"sam3d": cand_sam3d, "depthcarve": cand_depthcarve,
                     "primitive": cand_primitive, "cylinder": cand_cylinder}
-        # Reconstruction choice. SAM 3D's SILHOUETTE can pass QA while its 3D shape is
-        # wrong (solid cup/bowl with no cavity, fruit blown into a blob) -> for the
-        # round/hollow categories it reliably botches, PREFER the clean primitive sized
-        # to the depth measurement (recognizable AND graspable: hollow cup/bowl, ellipsoid
-        # fruit). SAM 3D stays first for everything else (boxes, complex/unknown shapes).
+        # Prefer the REAL SAM 3D reconstruction — its organic, real-looking geometry is
+        # the point of single-view recon. Fall back to a primitive only if SAM 3D fails QA.
+        # (A clean primitive is recognizable but looks idealized/fake; keep it for repair,
+        # not as the default. Graspability is handled separately at the physics layer, not
+        # by replacing the visual mesh.) Thin/elongated objects use the data-measured cylinder.
         _dw = dri.get("physical_width_m") or physical_size
         _dh = dri.get("physical_height_m") or physical_size
         _elong = (max(_dw, _dh) >= 0.08 and min(_dw, _dh)/max(_dw, _dh, 1e-6) <= 0.45)
         _fb = (["cylinder"] if _elong else fallbacks)
-        _cat = category_for_label(labels[i])
-        _prefer_prim = _cat in ("ellipsoid", "cup", "dish")
-        if _prefer_prim:
-            order = ["primitive", "sam3d"] + (_fb if (args.qa and pos is not None) else [])
-        else:
-            order = ["sam3d"] + (_fb if (args.qa and pos is not None) else [])
+        order = ["sam3d"] + (_fb if (args.qa and pos is not None) else [])
 
         # ---- Self-repair: try candidates in order, re-QA, keep best; accept first pass ----
         best = None
