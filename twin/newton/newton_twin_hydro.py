@@ -139,9 +139,10 @@ def main():
                     help="object id to place the target into/onto after lifting (-1 = pick+lift only)")
     ap.add_argument("--grip_max", type=float, default=0.08,
                     help="max gripper APERTURE in m (Franka hand=0.08; real Robotiq Hand-E=0.05)")
-    ap.add_argument("--grasp_mode", default="center", choices=["center", "yaw"],
+    ap.add_argument("--grasp_mode", default="center", choices=["center", "yaw", "rim"],
                     help="center=close across object center (search lateral dx); "
-                         "yaw=grasp at center and SEARCH wrist yaw (find the narrow-axis grip)")
+                         "yaw=grasp at center and SEARCH wrist yaw (narrow-axis grip); "
+                         "rim=straddle the near wall from one side (vessels), SEARCH grip height")
     args = ap.parse_args()
     grip_open_joint = args.grip_max / 2.0          # per-finger joint = half the aperture
 
@@ -308,6 +309,8 @@ def main():
     # per-world grasp orientation: DOWN, optionally yawed about world Z (yaw search)
     if args.grasp_mode == "yaw":
         yaws = np.linspace(0.0, np.pi, args.world_count)
+    elif args.grasp_mode == "rim":
+        yaws = np.full(args.world_count, np.pi / 2)    # fingers close radially across the wall
     else:
         yaws = np.zeros(args.world_count)
     grasp_q = [qmul(np.array([0.0, 0.0, np.sin(y/2), np.cos(y/2)]), DOWN_NP) for y in yaws]
@@ -387,27 +390,39 @@ def main():
                           bq[w * bodies_per_world + object_body_local, 1]]
                          for w in range(args.world_count)])
 
-    if args.grasp_mode == "yaw":
-        offs = np.zeros(args.world_count)             # yaw search: grasp at center XY
+    if args.grasp_mode in ("yaw", "rim"):
+        offs = np.zeros(args.world_count)             # search yaw/height, not lateral dx
     elif args.world_count == 1:
         offs = np.array([tgt["radius"] * 0.3])        # single env: a known-good slight +offset
     else:
         offs = np.linspace(-tgt["radius"] * 0.6, tgt["radius"] * 0.6, args.world_count)
-    gz = tgt["base_z"] + tgt["height"] / 2.0          # grasp at object mid-height
+    gz = tgt["base_z"] + tgt["height"] / 2.0          # grasp at object mid-height (place ref)
+
+    # per-world grasp pose: rim straddles the near (-x) wall and searches grip HEIGHT;
+    # center/yaw grasp the centroid (lateral dx / yaw handled above).
+    gy_arr = np.full(args.world_count, tgt["y"])
+    if args.grasp_mode == "rim":
+        gx_arr = np.full(args.world_count, tgt["x"] - tgt["radius"])
+        gz_arr = np.linspace(tgt["base_z"] + 0.40 * tgt["height"],
+                             tgt["base_z"] + 0.95 * tgt["height"], args.world_count)
+    else:
+        gx_arr = tgt["x"] + offs
+        gz_arr = np.full(args.world_count, gz)
 
     print("[HYDRO] settle..."); set_grip(GRIP_OPEN); sim(120)
     z_rest = obj_z().copy()
     max_z = z_rest.copy()          # measure peak lift from the SETTLED rest pose, not spawn
+    W = range(args.world_count)
     print("[HYDRO] approach...")
-    set_targets([wp.vec3(tgt["x"] + float(d), tgt["y"], gz + 0.16) for d in offs], GRIP_OPEN)
+    set_targets([wp.vec3(gx_arr[w], gy_arr[w], gz_arr[w] + 0.16) for w in W], GRIP_OPEN)
     sim(300)
     print("[HYDRO] descend...")
-    set_targets([wp.vec3(tgt["x"] + float(d), tgt["y"], gz) for d in offs], GRIP_OPEN)
+    set_targets([wp.vec3(gx_arr[w], gy_arr[w], gz_arr[w]) for w in W], GRIP_OPEN)
     sim(240)
     print("[HYDRO] close...")
     set_grip(GRIP_CLOSE); sim(180)
     print("[HYDRO] lift...")
-    set_targets([wp.vec3(tgt["x"] + float(d), tgt["y"], gz + 0.22) for d in offs], GRIP_CLOSE)
+    set_targets([wp.vec3(gx_arr[w], gy_arr[w], gz_arr[w] + 0.22) for w in W], GRIP_CLOSE)
     t0 = time.time(); sim(360); t_lift = time.time() - t0
     z_lift = obj_z()
 
@@ -417,8 +432,11 @@ def main():
           f"lift phase {t_lift:.1f}s)")
     print("=" * 64)
     def _param(w):
-        return (f"yaw={np.degrees(yaws[w]):5.0f}deg" if args.grasp_mode == "yaw"
-                else f"dx={offs[w]*100:+.1f}cm")
+        if args.grasp_mode == "yaw":
+            return f"yaw={np.degrees(yaws[w]):5.0f}deg"
+        if args.grasp_mode == "rim":
+            return f"grip_z={(gz_arr[w]-tgt['base_z'])*100:4.1f}cm"
+        return f"dx={offs[w]*100:+.1f}cm"
     for rank, w in enumerate(order, 1):
         pk = float(max_z[w] - z_rest[w]); fin = float(z_lift[w] - z_rest[w])
         tag = "HELD" if pk > 0.04 else ("partial" if pk > 0.01 else "slip")
