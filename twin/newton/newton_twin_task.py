@@ -276,8 +276,7 @@ def main():
         carry_z = max(gz, tp[2] + o["height"]) + 0.30
         dbase = pose(did)[2] if did in body_local else d["base_z"]
         dxy = pose(did)[:2] if did in body_local else np.array([d["x"], d["y"]])
-        obj_base_target = dbase + d["height"] + (0.03 if rel == "in" else 0.005)
-        rel_tcp_z = obj_base_target + grasp_off    # keep the grasp offset -> object base at target
+        obj_base_target = dbase + d["height"] + (0.02 if rel == "in" else 0.003)
 
         print(f"[TASK] step {si}: pick '{o['label']}' ({mode}) @({gx:+.3f},{gy:+.3f},{gz:+.3f})")
         move(gx, gy, gz + 0.16, yaw, 300)         # approach above
@@ -289,9 +288,16 @@ def main():
         print(f"       lift: {o['label']} rose {(zlift-tp[2])*100:+.1f}cm  [{'HELD' if held else 'SLIP'}]")
         print(f"[TASK] step {si}: place {rel} '{d['label']}' @({dxy[0]:+.3f},{dxy[1]:+.3f})")
         move(dxy[0] + place_dx, dxy[1], carry_z, yaw, 380)    # traverse over dest
-        move(dxy[0] + place_dx, dxy[1], rel_tcp_z, yaw, 280)  # lower
-        grip_to(GRIP_OPEN, 140); sim(60)                      # release gently
-        move(dxy[0] + place_dx, dxy[1], carry_z + 0.05, yaw, 200)  # retreat
+        # measure how far the object ACTUALLY hangs below the TCP now (it slips during the
+        # carry), so we lower until its base rests on the destination instead of releasing
+        # from a stale height -> set it down, then let go.
+        offset_below = carry_z - pose(tid)[2]
+        rel_tcp_z = obj_base_target + offset_below
+        move(dxy[0] + place_dx, dxy[1], rel_tcp_z, yaw, 300)  # lower until it rests on dest
+        sim(150)                                              # let it touch down & settle
+        grip_to(GRIP_OPEN, 160)                               # THEN open to release
+        sim(100)
+        move(dxy[0] + place_dx, dxy[1], carry_z + 0.05, yaw, 220)  # retreat clear
         sim(150)
 
     # report
