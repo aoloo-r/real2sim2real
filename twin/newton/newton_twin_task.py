@@ -125,6 +125,7 @@ def main():
         m, V = load_obj_mesh(o["mesh_path"])
         ext = (V.max(0) - V.min(0)).astype(float)
         o["radius"] = float(max(ext[0], ext[1]) / 2.0)
+        o["ext"] = ext
         o["height"] = float(ext[2])
         m.build_sdf(max_resolution=SDF_RES, narrow_band_range=SDF_BAND, margin=shape_cfg.gap)
         b = builder.add_body(label=f"obj_{oid}",
@@ -237,9 +238,10 @@ def main():
         o = by_id[tid]; d = by_id[did]
         tp = pose(tid)
         if mode == "rim":
-            yaw = np.pi / 2; gx = tp[0] - o["radius"]; gy = tp[1]
-            gz = tp[2] + o["height"] + 0.045        # fingertips straddle the rim (long Franka fingers)
-            place_dx = -o["radius"]                  # bowl center sits +radius from the TCP
+            wall = o["ext"][0] / 2.0                  # near (-x) wall distance on the approach axis
+            yaw = np.pi / 2; gx = tp[0] - wall; gy = tp[1]
+            gz = tp[2] + 0.55 * o["height"]          # TCP==fingertip -> grip mid-wall at the rim
+            place_dx = -wall                          # vessel center sits +wall from the TCP
         else:
             yaw = 0.0; gx = tp[0] + 0.3 * o["radius"]; gy = tp[1]   # +offset = known-good grip
             gz = tp[2] + 0.5 * o["height"]
