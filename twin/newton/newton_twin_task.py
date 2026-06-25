@@ -42,6 +42,8 @@ def main():
     ap.add_argument("--viewer", default="gl", choices=["gl", "null"])
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--grip_max", type=float, default=0.08)
+    ap.add_argument("--steps", default="2:3:center:in,3:1:rim:on",
+                    help="task steps 'tid:did:mode:rel,...' (default: kiwi->cup->plate on 174345)")
     args = ap.parse_args()
     grip_open = args.grip_max / 2.0
     N = 1
@@ -49,8 +51,8 @@ def main():
     objs = load_scene_objects(args.scene_dir, args.capture_dir, args.base_frame)
     by_id = {o["id"]: o for o in objs}
 
-    # TASK: (target_id, dest_id, grasp_mode, relation). kiwi(2)->bowl(0), bowl(0)->plate(1)
-    TASK = [(2, 0, "center", "in"), (0, 1, "rim", "on")]
+    # TASK: list of (target_id, dest_id, grasp_mode, relation)
+    TASK = [(int(a), int(b), m, rel) for a, b, m, rel in (s.split(":") for s in args.steps.split(","))]
     grasp_ids = sorted({t[0] for t in TASK})            # grasped -> free bodies
     static_ids = [oid for oid in by_id if oid not in grasp_ids]
     print("[TASK] steps:")
@@ -201,15 +203,16 @@ def main():
     def yaw_q(yaw):
         return quat_to_vec4(qmul(np.array([0.0, 0.0, np.sin(yaw / 2), np.cos(yaw / 2)]), DOWN))
 
-    def go(x, y, z, yaw, grip):
+    cur_grip = [GRIP_OPEN]
+
+    def ik_solve(x, y, z, yaw):
         pos_obj.set_target_positions(wp.array([wp.vec3(x, y, z)] * N, dtype=wp.vec3))
         rot_obj.set_target_rotations(wp.array([yaw_q(yaw)] * N, dtype=wp.vec4))
         ik_solver.step(joint_q_ik, joint_q_ik, iterations=48)
-        jt = control.joint_target_q.reshape((N, ctrl_per_world))
-        wp.copy(dest=jt[:, :7], src=joint_q_ik[:, :7])
-        wp.copy(dest=jt[:, 7:9], src=wp.full((N, 2), value=grip, dtype=wp.float32))
+        return joint_q_ik.numpy()[:, :7].copy()
 
     def set_grip(grip):
+        cur_grip[0] = grip
         jt = control.joint_target_q.reshape((N, ctrl_per_world))
         wp.copy(dest=jt[:, 7:9], src=wp.full((N, 2), value=grip, dtype=wp.float32))
 
@@ -228,6 +231,29 @@ def main():
                 try: viewer.log_contacts(contacts, stt[0])
                 except Exception: pass
                 viewer.end_frame()
+
+    def move(x, y, z, yaw, steps=240):
+        """Smoothly drive the arm: ramp joint targets from the current pose to the IK
+        goal with a smoothstep profile (ease in/out) so the motion isn't jerky."""
+        goal = ik_solve(x, y, z, yaw)
+        jt = control.joint_target_q.reshape((N, ctrl_per_world))
+        cur = jt.numpy()[:, :7].copy()
+        for i in range(1, steps + 1):
+            s = i / steps; s = s * s * (3 - 2 * s)           # smoothstep ease in/out
+            interp = (cur * (1 - s) + goal * s).astype(np.float32)
+            wp.copy(dest=jt[:, :7], src=wp.array(interp, dtype=wp.float32))
+            wp.copy(dest=jt[:, 7:9], src=wp.full((N, 2), value=cur_grip[0], dtype=wp.float32))
+            sim(1)
+
+    def grip_to(target, steps=140):
+        """Close/open the gripper gradually (no jolt that flicks the object)."""
+        jt = control.joint_target_q.reshape((N, ctrl_per_world))
+        g0 = cur_grip[0]
+        for i in range(1, steps + 1):
+            g = float(g0 + (target - g0) * (i / steps))
+            wp.copy(dest=jt[:, 7:9], src=wp.full((N, 2), value=g, dtype=wp.float32))
+            sim(1)
+        cur_grip[0] = target
 
     def pose(oid):
         return stt[0].body_q.numpy()[body_local[oid]][:3]
@@ -254,18 +280,18 @@ def main():
         rel_tcp_z = obj_base_target + grasp_off    # keep the grasp offset -> object base at target
 
         print(f"[TASK] step {si}: pick '{o['label']}' ({mode}) @({gx:+.3f},{gy:+.3f},{gz:+.3f})")
-        go(gx, gy, gz + 0.16, yaw, GRIP_OPEN); sim(300)         # approach
-        go(gx, gy, gz, yaw, GRIP_OPEN); sim(240)                # descend
-        set_grip(GRIP_CLOSE); sim(180)                          # close
-        go(gx, gy, carry_z, yaw, GRIP_CLOSE); sim(300)          # lift
+        move(gx, gy, gz + 0.16, yaw, 300)         # approach above
+        move(gx, gy, gz, yaw, 240)                # descend
+        grip_to(GRIP_CLOSE, 160); sim(60)         # close gently
+        move(gx, gy, carry_z, yaw, 340)           # lift
         zlift = pose(tid)[2]
         held = zlift - tp[2] > 0.04
         print(f"       lift: {o['label']} rose {(zlift-tp[2])*100:+.1f}cm  [{'HELD' if held else 'SLIP'}]")
         print(f"[TASK] step {si}: place {rel} '{d['label']}' @({dxy[0]:+.3f},{dxy[1]:+.3f})")
-        go(dxy[0] + place_dx, dxy[1], carry_z, yaw, GRIP_CLOSE); sim(300)    # over dest
-        go(dxy[0] + place_dx, dxy[1], rel_tcp_z, yaw, GRIP_CLOSE); sim(240)  # lower
-        set_grip(GRIP_OPEN); sim(150)                                         # release
-        go(dxy[0] + place_dx, dxy[1], carry_z + 0.05, yaw, GRIP_OPEN); sim(180)  # retreat
+        move(dxy[0] + place_dx, dxy[1], carry_z, yaw, 380)    # traverse over dest
+        move(dxy[0] + place_dx, dxy[1], rel_tcp_z, yaw, 280)  # lower
+        grip_to(GRIP_OPEN, 140); sim(60)                      # release gently
+        move(dxy[0] + place_dx, dxy[1], carry_z + 0.05, yaw, 200)  # retreat
         sim(150)
 
     # report
