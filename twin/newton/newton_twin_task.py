@@ -276,7 +276,10 @@ def main():
         carry_z = max(gz, tp[2] + o["height"]) + 0.30
         dbase = pose(did)[2] if did in body_local else d["base_z"]
         dxy = pose(did)[:2] if did in body_local else np.array([d["x"], d["y"]])
-        obj_base_target = dbase + d["height"] + (0.02 if rel == "in" else 0.003)
+        # rest the object ON a supporting surface before releasing (don't drop it):
+        #   "in"  -> lower onto the container's interior FLOOR (deep cup) so it's supported
+        #   "on"  -> set on top of the destination
+        obj_base_target = (dbase + 0.015) if rel == "in" else (dbase + d["height"] + 0.003)
 
         print(f"[TASK] step {si}: pick '{o['label']}' ({mode}) @({gx:+.3f},{gy:+.3f},{gz:+.3f})")
         move(gx, gy, gz + 0.16, yaw, 300)         # approach above
@@ -287,18 +290,25 @@ def main():
         held = zlift - tp[2] > 0.04
         print(f"       lift: {o['label']} rose {(zlift-tp[2])*100:+.1f}cm  [{'HELD' if held else 'SLIP'}]")
         print(f"[TASK] step {si}: place {rel} '{d['label']}' @({dxy[0]:+.3f},{dxy[1]:+.3f})")
-        move(dxy[0] + place_dx, dxy[1], carry_z, yaw, 380)    # traverse over dest
-        # measure how far the object ACTUALLY hangs below the TCP now (it slips during the
-        # carry), so we lower until its base rests on the destination instead of releasing
-        # from a stale height -> set it down, then let go.
-        offset_below = carry_z - pose(tid)[2]
-        rel_tcp_z = obj_base_target + offset_below
-        move(dxy[0] + place_dx, dxy[1], rel_tcp_z, yaw, 300)  # lower until it rests on dest
-        sim(150)                                              # let it touch down & settle
-        grip_to(GRIP_OPEN, 160)                               # THEN open to release
-        sim(100)
-        move(dxy[0] + place_dx, dxy[1], carry_z + 0.05, yaw, 220)  # retreat clear
+        # Measure where the object ACTUALLY sits relative to the TCP (it slips/shifts in the
+        # grip during lift+carry) in BOTH xy and z, so we can CENTER it on the destination
+        # and set it down to rest -- instead of placing it off-centre near the edge (tips off)
+        # or releasing it from a stale height (drops).
+        op = pose(tid)
+        off_xy = op[:2] - np.array([gx, gy])      # object centre relative to the TCP, world xy
+        off_below = carry_z - op[2]               # object base below the TCP
+        tx, ty = float(dxy[0] - off_xy[0]), float(dxy[1] - off_xy[1])   # centre object on dest
+        rel_tcp_z = obj_base_target + off_below
+        move(tx, ty, carry_z, yaw, 380)           # traverse, centred over dest
+        move(tx, ty, rel_tcp_z, yaw, 300)         # lower until the object rests on dest
+        sim(200)                                  # settle on the surface while still gripped
+        grip_to(GRIP_OPEN, 160)                   # THEN open to release
         sim(150)
+        move(tx, ty, carry_z + 0.06, yaw, 240)    # retreat straight up, clear
+        sim(180)
+        rp = pose(tid)
+        print(f"       released: {o['label']} now at z={rp[2]*100:.1f}cm, "
+              f"{np.linalg.norm(rp[:2]-dxy)*100:.1f}cm from dest center")
 
     # report
     print("\n" + "=" * 64); print("  NEWTON MULTI-STEP TASK RESULT"); print("=" * 64)
