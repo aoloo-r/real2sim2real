@@ -62,6 +62,10 @@ def main():
     wp.init()
     shape_cfg = newton.ModelBuilder.ShapeConfig(kh=1e11, gap=0.01, mu_torsional=0.0, mu_rolling=0.0)
     cfg_mesh = replace(shape_cfg, is_hydroelastic=True)
+    # grasped objects: a bit LESS friction than the default mu=1.0 so they don't adhere to
+    # the sticky hydroelastic pads and ride up on release (still grips fine: high pad normal
+    # force + the rim straddle is form-closure). Fixes flaky "object stuck to gripper".
+    cfg_obj = replace(shape_cfg, is_hydroelastic=True, mu=0.8)
     builder = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     builder.default_shape_cfg = shape_cfg
@@ -135,7 +139,7 @@ def main():
         m.build_sdf(max_resolution=SDF_RES, narrow_band_range=SDF_BAND, margin=shape_cfg.gap)
         b = builder.add_body(label=f"obj_{oid}",
                              xform=wp.transform(wp.vec3(o["x"], o["y"], o["base_z"] + 0.002), wp.quat_identity()))
-        builder.add_shape_mesh(b, mesh=m, cfg=cfg_mesh, color=wp.vec3(*o["color"]), label=f"obj_{oid}_mesh")
+        builder.add_shape_mesh(b, mesh=m, cfg=cfg_obj, color=wp.vec3(*o["color"]), label=f"obj_{oid}_mesh")
         body_local[oid] = b
         print(f"[TASK] free body '{o['label']}' id={oid} r={o['radius']:.3f} h={o['height']:.3f} base_z={o['base_z']:.3f}")
 
@@ -279,10 +283,12 @@ def main():
         carry_z = max(gz, tp[2] + o["height"]) + 0.30
         dbase = pose(did)[2] if did in body_local else d["base_z"]
         dxy = pose(did)[:2] if did in body_local else np.array([d["x"], d["y"]])
-        # rest the object ON a supporting surface before releasing (don't drop it):
-        #   "in"  -> lower onto the container's interior FLOOR (deep cup) so it's supported
-        #   "on"  -> set on top of the destination
-        obj_base_target = (dbase + 0.015) if rel == "in" else (dbase + d["height"] + 0.003)
+        # Placement height of the object base:
+        #   "in"  -> just above the container RIM, centred, so it drops to the bottom and
+        #            settles low/centred (the gripper can't reach a deep cup's floor without
+        #            hitting the walls; thin pads now release cleanly so a short drop is fine)
+        #   "on"  -> rest right on top of the destination (set down, don't drop)
+        obj_base_target = (dbase + d["height"] + 0.025) if rel == "in" else (dbase + d["height"] - 0.006)
 
         print(f"[TASK] step {si}: pick '{o['label']}' ({mode}) @({gx:+.3f},{gy:+.3f},{gz:+.3f})")
         move(gx, gy, gz + 0.16, yaw, 300)         # approach above
@@ -306,7 +312,7 @@ def main():
         move(tx, ty, rel_tcp_z, yaw, 300)         # lower until the object rests on dest
         sim(200)                                  # settle on the surface while still gripped
         grip_to(GRIP_OPEN, 160)                   # THEN open to release
-        sim(150)
+        sim(300)                                  # long dwell: let it fully separate/settle
         move(tx, ty, carry_z + 0.06, yaw, 240)    # retreat straight up, clear
         sim(180)
         rp = pose(tid)
