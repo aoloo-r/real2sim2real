@@ -104,7 +104,8 @@ def main():
     builder.joint_target_ke[:9] = [650.0] * 9
     builder.joint_target_kd[:9] = [100.0] * 9
     builder.joint_effort_limit[:7] = [80.0] * 7
-    builder.joint_effort_limit[7:9] = [20.0] * 2
+    builder.joint_effort_limit[7:9] = [70.0] * 2     # strong grip force (was 20 -> weak)
+    builder.joint_target_ke[7:9] = [1400.0] * 2      # stiff fingers -> close firmly and HOLD through motion
     builder.joint_armature[:7] = [0.1] * 7
     builder.joint_armature[7:9] = [0.5] * 2
 
@@ -139,7 +140,7 @@ def main():
         m.build_sdf(max_resolution=SDF_RES, narrow_band_range=SDF_BAND, margin=shape_cfg.gap)
         b = builder.add_body(label=f"obj_{oid}",
                              xform=wp.transform(wp.vec3(o["x"], o["y"], o["base_z"] + 0.002), wp.quat_identity()))
-        builder.add_shape_mesh(b, mesh=m, cfg=cfg_obj, color=wp.vec3(*o["color"]), label=f"obj_{oid}_mesh")
+        builder.add_shape_mesh(b, mesh=m, cfg=cfg_mesh, color=wp.vec3(*o["color"]), label=f"obj_{oid}_mesh")
         body_local[oid] = b
         print(f"[TASK] free body '{o['label']}' id={oid} r={o['radius']:.3f} h={o['height']:.3f} base_z={o['base_z']:.3f}")
 
@@ -271,14 +272,14 @@ def main():
         o = by_id[tid]; d = by_id[did]
         tp = pose(tid)
         if mode == "rim":
-            wall = o["ext"][0] / 2.0                  # near (-x) wall distance on the approach axis
-            yaw = np.pi / 2; gx = tp[0] - wall; gy = tp[1]
-            gz = tp[2] + 0.55 * o["height"]          # TCP==fingertip -> grip mid-wall at the rim
-            place_dx = -wall                          # vessel center sits +wall from the TCP
+            wall = o["ext"][1] / 2.0                  # near (-y) wall (the gripper's closing axis)
+            yaw = 0.0; gx = tp[0]; gy = tp[1] - wall  # straight DOWN, NO wrist twist
+            gz = tp[2] + o["height"] - 0.020         # grasp 2cm BELOW the rim (no deep plunge); firm grip holds it
+            place_dx, place_dy = 0.0, -wall           # vessel centre sits +wall (y) from the TCP
         else:
             yaw = 0.0; gx = tp[0] + 0.3 * o["radius"]; gy = tp[1]   # +offset = known-good grip
-            gz = tp[2] + 0.5 * o["height"]
-            place_dx = 0.0
+            gz = tp[2] + 0.60 * o["height"]        # grasp a bit higher (descend less -> avoid collision)
+            place_dx, place_dy = 0.0, 0.0
         grasp_off = gz - tp[2]
         carry_z = max(gz, tp[2] + o["height"]) + 0.30
         dbase = pose(did)[2] if did in body_local else d["base_z"]
@@ -288,13 +289,15 @@ def main():
         #            settles low/centred (the gripper can't reach a deep cup's floor without
         #            hitting the walls; thin pads now release cleanly so a short drop is fine)
         #   "on"  -> rest right on top of the destination (set down, don't drop)
-        obj_base_target = (dbase + d["height"] + 0.025) if rel == "in" else (dbase + d["height"] - 0.006)
+        obj_base_target = (dbase + d["height"] + 0.025) if rel == "in" else (dbase + d["height"] + 0.003)
 
         print(f"[TASK] step {si}: pick '{o['label']}' ({mode}) @({gx:+.3f},{gy:+.3f},{gz:+.3f})")
-        move(gx, gy, gz + 0.16, yaw, 300)         # approach above
-        move(gx, gy, gz, yaw, 240)                # descend
-        grip_to(GRIP_CLOSE, 160); sim(60)         # close gently
-        move(gx, gy, carry_z, yaw, 340)           # lift
+        move(gx, gy, gz + 0.07, yaw, 220)         # approach just above (short descent)
+        move(gx, gy, gz, yaw, 180)                # descend straight down
+        grip_to(GRIP_CLOSE, 160)                  # close FIRMLY
+        sim(350)                                  # brief settle so the grip seats (not minutes)
+        move(gx, gy, carry_z, yaw, 560)           # lift SLOWLY (gentle accel -> contents stay seated, no tunnelling)
+        sim(300)                                  # let the grasp settle in-hand before traversing
         zlift = pose(tid)[2]
         held = zlift - tp[2] > 0.04
         print(f"       lift: {o['label']} rose {(zlift-tp[2])*100:+.1f}cm  [{'HELD' if held else 'SLIP'}]")
@@ -303,17 +306,30 @@ def main():
         # grip during lift+carry) in BOTH xy and z, so we can CENTER it on the destination
         # and set it down to rest -- instead of placing it off-centre near the edge (tips off)
         # or releasing it from a stale height (drops).
-        op = pose(tid)
-        off_xy = op[:2] - np.array([gx, gy])      # object centre relative to the TCP, world xy
-        off_below = carry_z - op[2]               # object base below the TCP
-        tx, ty = float(dxy[0] - off_xy[0]), float(dxy[1] - off_xy[1])   # centre object on dest
-        rel_tcp_z = obj_base_target + off_below
-        move(tx, ty, carry_z, yaw, 380)           # traverse, centred over dest
+        # Place using the SAME grasp distance (grasp_off = TCP-above-object-base at grasp),
+        # not a re-measured value -- so the object is set down at the same height it was picked
+        # up, just offset onto the destination. Robust to grip noise; needs a clean grasp (we
+        # now grip the cup high near the rim so it doesn't slip). XY: geometric centre.
+        tx, ty = float(dxy[0] + place_dx), float(dxy[1] + place_dy)
+        rel_tcp_z = obj_base_target + grasp_off
+        move(tx, ty, carry_z, yaw, 560)           # traverse SLOWLY over dest (less swing/slip)
         move(tx, ty, rel_tcp_z, yaw, 300)         # lower until the object rests on dest
         sim(200)                                  # settle on the surface while still gripped
         grip_to(GRIP_OPEN, 160)                   # THEN open to release
         sim(300)                                  # long dwell: let it fully separate/settle
-        move(tx, ty, carry_z + 0.06, yaw, 240)    # retreat straight up, clear
+        print(f"       after open+dwell (pre-retreat): {o['label']} z={pose(tid)[2]*100:.1f}cm "
+              f"fingertgt={control.joint_target_q.reshape((N, ctrl_per_world)).numpy()[0,7]*100:.1f}cm "
+              f"fingerACTUAL={stt[0].joint_q.numpy()[7]*100:.1f}cm")
+        # Retreat UP and toward the destination CENTRE: for a rim grasp the inner finger sits
+        # inside the vessel, so a straight-up pull hooks it and lifts the object. Shifting toward
+        # centre (where the opening is widest) withdraws the finger cleanly without catching.
+        # Withdraw the inner finger straight UP through the OPENING CENTRE (not up the wall,
+        # where it hooks the cup and drags it). Re-centre the inner finger over the vessel
+        # opening first, then rise vertically.
+        wx = dxy[0]
+        wy = (dxy[1] - 0.041) if mode == "rim" else dxy[1]   # inner finger -> opening centre
+        move(wx, wy, rel_tcp_z, yaw, 150)                    # recentre finger, same height
+        move(wx, wy, carry_z + 0.08, yaw, 300)               # rise straight up: finger exits clean
         sim(180)
         rp = pose(tid)
         print(f"       released: {o['label']} now at z={rp[2]*100:.1f}cm, "
