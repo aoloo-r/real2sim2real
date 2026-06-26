@@ -214,8 +214,10 @@ def main():
     pad_mesh = newton.usd.get_mesh(pad_stage.GetPrimAtPath("/root/Model/Model"),
                                    load_normals=True, face_varying_normal_conversion="vertex_splitting")
     pad_scale = np.asarray(newton.usd.get_scale(pad_stage.GetPrimAtPath("/root/Model")), dtype=np.float32)
-    if not np.allclose(pad_scale, 1.0):
-        pad_mesh = pad_mesh.copy(vertices=pad_mesh.vertices * pad_scale, recompute_inertia=True)
+    # Thin the ~2cm-thick asset pad to ~0.4cm so it doesn't shrink the gripper opening from
+    # 8cm to ~6cm ("something inside the gripper") and choke the release clearance.
+    pad_scale = pad_scale * np.array([1.0, 0.2, 1.0], dtype=np.float32)
+    pad_mesh = pad_mesh.copy(vertices=pad_mesh.vertices * pad_scale, recompute_inertia=True)
     pad_mesh.build_sdf(max_resolution=SDF_RES, narrow_band_range=SDF_BAND, margin=shape_cfg.gap)
     pad_xform = wp.transform(wp.vec3(0.0, 0.005, 0.045),
                              wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi))
