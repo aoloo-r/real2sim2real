@@ -103,6 +103,9 @@ class Fold:
         self.sim_time = 0.0
         self.viz_scale = 0.01
         self.pins = args.pins
+        self.fold_mode = args.fold_mode
+        self.folds = args.folds
+        self.next_fold = 0
 
         # cloth footprint + texture
         w, h, label, box, img = load_cloth_spec(args.scene_dir)
@@ -115,7 +118,11 @@ class Fold:
         cloth_w = self.dim_x * cell; cloth_h = self.dim_y * cell
         # cloth centred on the table in front of the robot
         self.cloth_cx, self.cloth_cy, self.cloth_top = 0.0, -50.0, 21.0
-        print(f"[FOLD] '{label}' {w*100:.0f}x{h*100:.0f}cm -> grid {self.dim_x}x{self.dim_y}", flush=True)
+        self.cell = cell
+        xh, yh = cloth_w / 2.0, cloth_h / 2.0
+        self.init_bbox = [self.cloth_cx - xh, self.cloth_cx + xh, self.cloth_cy - yh, self.cloth_cy + yh]
+        print(f"[FOLD] '{label}' {w*100:.0f}x{h*100:.0f}cm -> grid {self.dim_x}x{self.dim_y}, "
+              f"mode={self.fold_mode} folds={self.folds}", flush=True)
 
         self.scene = ModelBuilder(gravity=-981.0)
 
@@ -169,7 +176,7 @@ class Fold:
 
         self.model.edge_rest_angle.zero_()
         self.cloth_solver = SolverVBD(
-            self.model, iterations=5, integrate_with_external_rigid_solver=True,
+            self.model, iterations=8, integrate_with_external_rigid_solver=True,
             particle_self_contact_radius=0.2, particle_self_contact_margin=0.2,
             particle_topological_contact_filter_threshold=1,
             particle_rest_shape_contact_exclusion_radius=0.5, particle_enable_self_contact=True,
@@ -234,20 +241,56 @@ class Fold:
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
         q = DOWN_Q
-        cx, cy = 19.0, -35.0      # pick corner (near-right)
-        fx, fy = -19.0, -65.0     # fold target (far-left corner)
-        # [duration, x, y, z, qw, qx, qy, qz, grip]
-        self.robot_key_poses = np.array([
-            [3.0,  cx, cy, 42.0, *q, OPEN],    # approach above corner
-            [2.0,  cx, cy, 21.5, *q, OPEN],    # descend to corner
-            [1.5,  cx, cy, 21.5, *q, CLOSE],   # CLOSE -> grasp (pin)
-            [2.5,  cx, cy, 42.0, *q, CLOSE],   # lift
-            [4.0,  fx, fy, 42.0, *q, CLOSE],   # carry diagonally over the cloth
-            [2.0,  fx, fy, 25.0, *q, CLOSE],   # lower onto far corner
-            [1.5,  fx, fy, 25.0, *q, OPEN],    # OPEN -> release
-            [2.0,  fx, fy, 44.0, *q, OPEN],    # retreat up
-            [2.5, -45.0, -50.0, 44.0, *q, OPEN],  # clear away
-        ], dtype=np.float32)
+        if self.fold_mode == "corner":
+            cx, cy = 19.0, -35.0      # pick corner (near-right)
+            fx, fy = -19.0, -65.0     # fold target (far-left corner)
+            self.robot_key_poses = np.array([
+                [3.0,  cx, cy, 42.0, *q, OPEN],    # approach above corner
+                [2.0,  cx, cy, 21.5, *q, OPEN],    # descend to corner
+                [1.5,  cx, cy, 21.5, *q, CLOSE],   # CLOSE -> grasp (pin)
+                [2.5,  cx, cy, 42.0, *q, CLOSE],   # lift
+                [4.0,  fx, fy, 42.0, *q, CLOSE],   # carry diagonally over the cloth
+                [2.0,  fx, fy, 25.0, *q, CLOSE],   # lower onto far corner
+                [1.5,  fx, fy, 25.0, *q, OPEN],    # OPEN -> release
+                [2.0,  fx, fy, 44.0, *q, OPEN],    # retreat up
+                [2.5, -45.0, -50.0, 44.0, *q, OPEN],  # clear away
+            ], dtype=np.float32)
+            self.fold_specs = []
+        else:
+            # multi / half: N alternating half-folds (y, x, y, x, ...) down to a small piece.
+            # Each fold grasps the cloth's CURRENT max edge along the axis and brings it onto the
+            # opposite edge (fold line = mid). bbox shrinks toward the (xmin,ymin) corner; layers double.
+            nf = 1 if self.fold_mode == "half" else self.folds
+            bbox = list(self.init_bbox)               # [x0, x1, y0, y1]
+            poses, specs = [], []
+            ZHI, ZLIFT, ZAPEX = 42.0, 39.0, 41.0
+            for i in range(nf):
+                axis = "y" if i % 2 == 0 else "x"
+                x0, x1, y0, y1 = bbox
+                cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                zg = 21.5 + 1.3 * i                   # grasp/land rise as the stack thickens
+                zland = 23.0 + 1.3 * i
+                if axis == "y":
+                    g = (cx, y1); t = (cx, y0); mid = (cx, (y0 + y1) / 2.0)
+                    bbox[3] = (y0 + y1) / 2.0
+                else:
+                    g = (x1, cy); t = (x0, cy); mid = ((x0 + x1) / 2.0, cy)
+                    bbox[1] = (x0 + x1) / 2.0
+                poses += [
+                    [1.5, g[0], g[1], ZHI,   *q, OPEN],    # approach above grasp edge
+                    [1.2, g[0], g[1], zg,    *q, OPEN],    # descend
+                    [1.0, g[0], g[1], zg,    *q, CLOSE],   # grasp edge (pin band)
+                    [1.5, g[0], g[1], ZLIFT, *q, CLOSE],   # peel/lift
+                    [1.5, mid[0], mid[1], ZAPEX, *q, CLOSE],  # arc over the fold line
+                    [1.5, t[0], t[1], ZLIFT, *q, CLOSE],   # carry over the far edge
+                    [1.2, t[0], t[1], zland, *q, CLOSE],   # lay down
+                    [1.0, t[0], t[1], zland, *q, OPEN],    # release
+                    [1.2, t[0], t[1], ZHI,   *q, OPEN],    # retreat up
+                ]
+                specs.append({"axis": axis})
+            poses += [[1.5, -45.0, -50.0, ZHI, *q, OPEN]]   # clear away
+            self.robot_key_poses = np.array(poses, dtype=np.float32)
+            self.fold_specs = specs
         self.targets = self.robot_key_poses[:, 1:]
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
         self.target = self.targets[0]
@@ -330,14 +373,24 @@ class Fold:
                   outputs=[self.tip_buf])
         tip = self.tip_buf.numpy()[0]
         pq = self.state_0.particle_q.numpy()
-        d = np.linalg.norm(pq - tip, axis=1)
-        idx = np.argsort(d)[:self.pins]
+        if self.fold_mode == "corner":
+            d = np.linalg.norm(pq - tip, axis=1)
+            idx = np.argsort(d)[:self.pins]
+            what = f"corner ({self.pins} particles {idx.tolist()})"
+        else:
+            # pin the whole CURRENT max edge along this fold's axis (across all layers), so the
+            # edge translates rigidly with the gripper and stays straight + full width
+            axis = self.fold_specs[min(self.next_fold, len(self.fold_specs) - 1)]["axis"]
+            self.next_fold += 1
+            col = 1 if axis == "y" else 0
+            idx = np.where(pq[:, col] >= pq[:, col].max() - 3.0)[0]
+            what = f"fold {self.next_fold} {axis}-edge ({len(idx)} particles)"
         self.pin_idx = wp.array(idx.astype(np.int32), dtype=wp.int32)
         self.pin_off = wp.array((pq[idx] - tip).astype(np.float32), dtype=wp.vec3)
         im = self.orig_inv_mass.copy(); im[idx] = 0.0
         self.model.particle_inv_mass.assign(im)
         self.grasp_active = True
-        print(f"[FOLD] GRASP corner: pinned {self.pins} particle(s) {idx.tolist()} at t={self.sim_time:.1f}s", flush=True)
+        print(f"[FOLD] GRASP {what} at t={self.sim_time:.1f}s", flush=True)
 
     def _release(self):
         self.model.particle_inv_mass.assign(self.orig_inv_mass)
@@ -409,7 +462,9 @@ def main():
     ap.add_argument("--scene_dir", required=True)
     ap.add_argument("--capture_dir", default=None)
     ap.add_argument("--viewer", default="gl", choices=["gl", "null"])
-    ap.add_argument("--pins", type=int, default=2, help="cloth corner particles pinned to the gripper")
+    ap.add_argument("--fold_mode", default="multi", choices=["multi", "half", "corner"])
+    ap.add_argument("--folds", type=int, default=3, help="number of alternating half-folds (multi mode)")
+    ap.add_argument("--pins", type=int, default=2, help="corner particles pinned (corner mode only)")
     ap.add_argument("--no_texture", action="store_true")
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--screenshot", default=None, help="PNG glob: save frames at fold milestones")
@@ -430,8 +485,11 @@ def main():
     shots = {}
     if args.screenshot:
         base = args.screenshot.replace(".png", "")
-        shots = {int(7.5 * ex.fps): f"{base}_lift.png", int(11.5 * ex.fps): f"{base}_carry.png",
-                 int(15.5 * ex.fps): f"{base}_release.png", n_frames - 1: f"{base}_done.png"}
+        # one shot just after each fold's release pose, plus the final result
+        for i, _ in enumerate(ex.fold_specs):
+            rel = i * 9 + 7                       # release pose index within fold i
+            shots[int(ex.robot_key_poses_time[rel] * ex.fps)] = f"{base}_fold{i+1}.png"
+        shots[n_frames - 1] = f"{base}_done.png"
 
     print(f"[FOLD] running {n_frames} frames ({ex.robot_key_poses_time[-1]:.0f}s schedule)...", flush=True)
     t0 = time.time()
