@@ -295,7 +295,9 @@ class Fold:
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
         self.target = self.targets[0]
         self.endeffector_id = builder.body_count - 3
-        self.endeffector_offset = wp.transform([0.0, 0.0, 22.0], wp.quat_identity())
+        # control the FINGERTIP (not a virtual point 22cm below the hand) so the fingers
+        # actually descend to the cloth and make contact
+        self.endeffector_offset = wp.transform([0.0, 0.0, 11.0], wp.quat_identity())
 
     def set_up_control(self):
         self.control = self.model.control()
@@ -369,28 +371,41 @@ class Fold:
         self.prev_grip = grip
 
     def _grasp(self):
-        wp.launch(compute_tip, 1, inputs=[self.state_0.body_q, self.endeffector_id, self.ee_off_vec],
-                  outputs=[self.tip_buf])
-        tip = self.tip_buf.numpy()[0]
+        # the actual pinch point = midpoint of the two fingertip bodies, extended to the pad tips,
+        # so the cloth is held WHERE THE FINGERS ARE (visible contact) -- not at an abstract EE offset
+        bq = self.state_0.body_q.numpy()
+        hand = bq[self.endeffector_id, :3]
+        q6 = bq[self.endeffector_id, 3:7]                 # (x,y,z,w)
+        fmid = 0.5 * (bq[-2, :3] + bq[-1, :3])            # bodies -2,-1 are the two fingers
+        adir = fmid - hand; n = np.linalg.norm(adir)
+        adir = adir / n if n > 1e-6 else np.array([0.0, 0.0, -1.0])
+        pinch = fmid + 3.0 * adir                         # ~pad tip, just past the finger bodies
+
+        def qrot(q, v):                                   # rotate v by quaternion q (x,y,z,w)
+            x, y, z, w = q; t = 2.0 * np.cross([x, y, z], v)
+            return np.asarray(v) + w * t + np.cross([x, y, z], t)
+        qinv = np.array([-q6[0], -q6[1], -q6[2], q6[3]])
+        self.ee_off_vec = wp.vec3(*qrot(qinv, pinch - hand).astype(float))  # pinch in hand-local frame
+                                                          # -> pin kernel now tracks the fingertips
+
         pq = self.state_0.particle_q.numpy()
         if self.fold_mode == "corner":
-            d = np.linalg.norm(pq - tip, axis=1)
-            idx = np.argsort(d)[:self.pins]
-            what = f"corner ({self.pins} particles {idx.tolist()})"
+            idx = np.argsort(np.linalg.norm(pq - pinch, axis=1))[:self.pins]
+            what = f"corner ({self.pins} particles)"
         else:
-            # pin the whole CURRENT max edge along this fold's axis (across all layers), so the
-            # edge translates rigidly with the gripper and stays straight + full width
             axis = self.fold_specs[min(self.next_fold, len(self.fold_specs) - 1)]["axis"]
             self.next_fold += 1
             col = 1 if axis == "y" else 0
             idx = np.where(pq[:, col] >= pq[:, col].max() - 3.0)[0]
             what = f"fold {self.next_fold} {axis}-edge ({len(idx)} particles)"
         self.pin_idx = wp.array(idx.astype(np.int32), dtype=wp.int32)
-        self.pin_off = wp.array((pq[idx] - tip).astype(np.float32), dtype=wp.vec3)
+        self.pin_off = wp.array((pq[idx] - pinch).astype(np.float32), dtype=wp.vec3)  # hold at fingertips
         im = self.orig_inv_mass.copy(); im[idx] = 0.0
         self.model.particle_inv_mass.assign(im)
         self.grasp_active = True
-        print(f"[FOLD] GRASP {what} at t={self.sim_time:.1f}s", flush=True)
+        ft_gap = float(pinch[2] - pq[idx, 2].mean())
+        print(f"[FOLD] GRASP {what} at t={self.sim_time:.1f}s  fingertip z={pinch[2]:.1f} "
+              f"cloth z={pq[idx,2].mean():.1f} (gap {ft_gap:+.1f}cm)", flush=True)
 
     def _release(self):
         self.model.particle_inv_mass.assign(self.orig_inv_mass)
@@ -485,9 +500,11 @@ def main():
     shots = {}
     if args.screenshot:
         base = args.screenshot.replace(".png", "")
-        # one shot just after each fold's release pose, plus the final result
+        # a shot at each fold's grasp (fingers on cloth) and just after its release, plus the result
         for i, _ in enumerate(ex.fold_specs):
-            rel = i * 9 + 7                       # release pose index within fold i
+            grab = i * 9 + 3                      # lift pose (fingers have just closed on the cloth)
+            rel = i * 9 + 7                       # release pose
+            shots[int(ex.robot_key_poses_time[grab] * ex.fps) - 5] = f"{base}_grab{i+1}.png"
             shots[int(ex.robot_key_poses_time[rel] * ex.fps)] = f"{base}_fold{i+1}.png"
         shots[n_frames - 1] = f"{base}_done.png"
 
