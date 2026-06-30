@@ -106,9 +106,12 @@ class Fold:
         self.fold_mode = args.fold_mode
         self.folds = args.folds
         self.next_fold = 0
+        self.place_in_box = args.place_in_box
+        self.box = [float(v) for v in args.box.split(",")]   # cx,cy,w,d,h (cm)
 
         # cloth footprint + texture
         w, h, label, box, img = load_cloth_spec(args.scene_dir)
+        w = min(w, args.cloth_max); h = min(h, args.cloth_max)   # cap for Franka reach
         cap = args.capture_dir or args.scene_dir.replace("/outputs/", "/captures/")
         self.rgb_path = os.path.join(cap, "rgb.png")
         self.use_tex = (not args.no_texture) and os.path.exists(self.rgb_path)
@@ -139,6 +142,23 @@ class Fold:
         self.scene.add_shape_box(-1, wp.transform(self.table_pos_cm, wp.quat_identity()),
                                  hx=self.table_hx, hy=self.table_hy, hz=self.table_hz)
 
+        # open-top container (4 walls on the table top) at the captured box's real dimensions
+        self.box_shape_idx = []
+        self.box_walls = []
+        if self.place_in_box:
+            bcx, bcy, bw, bd, bh = self.box
+            t = 1.0; ztop = self.table_pos_cm[2] + self.table_hz   # table top z (=20)
+            self.box_walls = [
+                (bcx + bw / 2, bcy, ztop + bh / 2, t / 2, bd / 2 + t, bh / 2),   # +x wall
+                (bcx - bw / 2, bcy, ztop + bh / 2, t / 2, bd / 2 + t, bh / 2),   # -x wall
+                (bcx, bcy + bd / 2, ztop + bh / 2, bw / 2 + t, t / 2, bh / 2),   # +y wall
+                (bcx, bcy - bd / 2, ztop + bh / 2, bw / 2 + t, t / 2, bh / 2),   # -y wall
+            ]
+            for (cx, cy, cz, hx, hy, hz) in self.box_walls:
+                self.box_shape_idx.append(self.scene.shape_count)
+                self.scene.add_shape_box(-1, wp.transform((cx, cy, cz), wp.quat_identity()),
+                                         hx=hx, hy=hy, hz=hz)
+
         # cloth grid (centred), resting just above the table top
         self.scene.add_cloth_grid(
             pos=wp.vec3(self.cloth_cx - 0.5 * cloth_w, self.cloth_cy - 0.5 * cloth_h, self.cloth_top),
@@ -154,6 +174,8 @@ class Fold:
         # hide table from auto shape rendering (GL bakes prim dims, ignores scale) -> draw manually
         flags = self.model.shape_flags.numpy()
         flags[self.table_shape_idx] &= ~int(newton.ShapeFlags.VISIBLE)
+        for si in self.box_shape_idx:                 # walls drawn manually at m-scale too
+            flags[si] &= ~int(newton.ShapeFlags.VISIBLE)
         self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
 
         # contact material
@@ -212,6 +234,14 @@ class Fold:
              float(self.table_pos_cm[2]) * self.viz_scale), wp.quat_identity())], dtype=wp.transform)
         self.table_viz_scale = (self.table_hx * self.viz_scale, self.table_hy * self.viz_scale, self.table_hz * self.viz_scale)
         self.table_viz_color = wp.array([wp.vec3(0.55, 0.55, 0.58)], dtype=wp.vec3)
+        # container wall viz (meters)
+        self.box_walls_viz = []
+        for (cx, cy, cz, hx, hy, hz) in self.box_walls:
+            self.box_walls_viz.append((
+                (hx * self.viz_scale, hy * self.viz_scale, hz * self.viz_scale),
+                wp.array([wp.transform((cx * self.viz_scale, cy * self.viz_scale, cz * self.viz_scale),
+                                       wp.quat_identity())], dtype=wp.transform),
+                wp.array([wp.vec3(0.62, 0.47, 0.32)], dtype=wp.vec3)))
 
         # meter-scale shape data for the robot (the example's two-path swap)
         self.sim_shape_transform = self.model.shape_transform; self.sim_shape_scale = self.model.shape_scale
@@ -288,6 +318,23 @@ class Fold:
                     [1.2, t[0], t[1], ZHI,   *q, OPEN],    # retreat up
                 ]
                 specs.append({"axis": axis})
+            if self.place_in_box:
+                # pick the folded bundle (centre of the final bbox) and place it in the container
+                bx, by = (bbox[0] + bbox[1]) / 2.0, (bbox[2] + bbox[3]) / 2.0
+                bcx, bcy, bw, bd, bh = self.box
+                box_top = 20.0 + bh                   # table top (z=20) + wall height
+                zgb = 22.0 + 1.3 * nf                 # grasp height ~ top of the folded stack
+                poses += [
+                    [2.0, bx, by, ZHI, *q, OPEN],          # approach above bundle
+                    [1.5, bx, by, zgb, *q, OPEN],          # descend onto bundle
+                    [1.2, bx, by, zgb, *q, CLOSE],         # grasp bundle
+                    [2.0, bx, by, ZHI, *q, CLOSE],         # lift
+                    [2.5, bcx, bcy, ZHI, *q, CLOSE],       # carry over the box
+                    [2.0, bcx, bcy, box_top + 4.0, *q, CLOSE],  # lower to the rim
+                    [1.2, bcx, bcy, box_top + 4.0, *q, OPEN],   # release -> drops in
+                    [2.0, bcx, bcy, ZHI, *q, OPEN],        # retreat
+                ]
+                specs.append({"axis": "bundle"})
             poses += [[1.5, -45.0, -50.0, ZHI, *q, OPEN]]   # clear away
             self.robot_key_poses = np.array(poses, dtype=np.float32)
             self.fold_specs = specs
@@ -395,9 +442,17 @@ class Fold:
         else:
             axis = self.fold_specs[min(self.next_fold, len(self.fold_specs) - 1)]["axis"]
             self.next_fold += 1
-            col = 1 if axis == "y" else 0
-            idx = np.where(pq[:, col] >= pq[:, col].max() - 3.0)[0]
-            what = f"fold {self.next_fold} {axis}-edge ({len(idx)} particles)"
+            if axis == "bundle":
+                # grab the whole folded bundle: particles within a radius of the fingertip (xy)
+                d2 = np.linalg.norm(pq[:, :2] - pinch[:2], axis=1)
+                idx = np.where(d2 < 9.0)[0]
+                if len(idx) < 4:
+                    idx = np.argsort(d2)[:24]
+                what = f"bundle ({len(idx)} particles)"
+            else:
+                col = 1 if axis == "y" else 0
+                idx = np.where(pq[:, col] >= pq[:, col].max() - 3.0)[0]
+                what = f"fold {self.next_fold} {axis}-edge ({len(idx)} particles)"
         self.pin_idx = wp.array(idx.astype(np.int32), dtype=wp.int32)
         self.pin_off = wp.array((pq[idx] - pinch).astype(np.float32), dtype=wp.vec3)  # hold at fingertips
         im = self.orig_inv_mass.copy(); im[idx] = 0.0
@@ -458,6 +513,8 @@ class Fold:
         self.viewer.log_state(self.viz_state)       # robot only (triangles hidden)
         self.viewer.log_shapes("/table", newton.GeoType.BOX, self.table_viz_scale,
                                self.table_viz_xform, self.table_viz_color)
+        for i, (sc, xf, col) in enumerate(self.box_walls_viz):
+            self.viewer.log_shapes(f"/box_wall{i}", newton.GeoType.BOX, sc, xf, col)
         # textured cloth (meter scale)
         if self.use_tex:
             self.viewer.log_mesh("cloth", self.viz_state.particle_q, self.tri_flat, uvs=self.uvs,
@@ -480,6 +537,9 @@ def main():
     ap.add_argument("--fold_mode", default="multi", choices=["multi", "half", "corner"])
     ap.add_argument("--folds", type=int, default=3, help="number of alternating half-folds (multi mode)")
     ap.add_argument("--pins", type=int, default=2, help="corner particles pinned (corner mode only)")
+    ap.add_argument("--place_in_box", action="store_true", help="after folding, pick the bundle and place it in the box")
+    ap.add_argument("--box", default="-33,-40,27,27,10", help="container cx,cy,width,depth,wall_height (cm)")
+    ap.add_argument("--cloth_max", type=float, default=0.38, help="cap cloth dimension (m) for reachability")
     ap.add_argument("--no_texture", action="store_true")
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--screenshot", default=None, help="PNG glob: save frames at fold milestones")
@@ -500,12 +560,11 @@ def main():
     shots = {}
     if args.screenshot:
         base = args.screenshot.replace(".png", "")
-        # a shot at each fold's grasp (fingers on cloth) and just after its release, plus the result
-        for i, _ in enumerate(ex.fold_specs):
-            grab = i * 9 + 3                      # lift pose (fingers have just closed on the cloth)
-            rel = i * 9 + 7                       # release pose
-            shots[int(ex.robot_key_poses_time[grab] * ex.fps) - 5] = f"{base}_grab{i+1}.png"
-            shots[int(ex.robot_key_poses_time[rel] * ex.fps)] = f"{base}_fold{i+1}.png"
+        # a shot just after every release (grip OPEN following CLOSE), plus the final result
+        grips = ex.robot_key_poses[:, -1]
+        rels = [i for i in range(1, len(grips)) if grips[i] > 0.4 >= grips[i - 1]]
+        for k, i in enumerate(rels):
+            shots[int(ex.robot_key_poses_time[i] * ex.fps)] = f"{base}_step{k+1}.png"
         shots[n_frames - 1] = f"{base}_done.png"
 
     print(f"[FOLD] running {n_frames} frames ({ex.robot_key_poses_time[-1]:.0f}s schedule)...", flush=True)
