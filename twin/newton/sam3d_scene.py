@@ -60,6 +60,10 @@ def load_scene(scene_dir, capture_dir):
     for i, o in enumerate(layout.get("objects", [])):
         mp = os.path.join(scene_dir, o.get("mesh_path") or f"object_{i}/mesh.obj")
         m = trimesh.load(mp, force="mesh", process=False)   # process=False -> preserve vert order/colours
+        try:                              # denoise (VBD stability); moves positions only, keeps order
+            trimesh.smoothing.filter_humphrey(m, alpha=0.1, beta=0.5, iterations=12)
+        except Exception:
+            pass
         vcanon = np.asarray(m.vertices, np.float64)
         faces = np.asarray(m.faces, np.int64)
         # per-vertex colours from the aligned .npy (same order as the untouched mesh verts)

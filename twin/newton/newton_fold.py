@@ -150,11 +150,12 @@ def faithful_objects(scene_dir, capture_dir, cloth_cx, cloth_cy, table_top):
 
     cbb = [cv[:, 0].min(), cv[:, 0].max(), cv[:, 1].min(), cv[:, 1].max()]
     cloth_out = {"verts": cv.astype(np.float32), "faces": cloth["faces"].reshape(-1, 3),
-                 "color": cloth["color"], "bbox": cbb, "label": cloth["label"]}
+                 "color": cloth["color"], "bbox": cbb, "label": cloth["label"],
+                 "vcolors": cloth.get("vcolors")}
     box_out = None
     if box is not None:
         box_out = {"verts": parts["box"].astype(np.float32), "faces": box["faces"].reshape(-1, 3),
-                   "color": box["color"], "label": box["label"]}
+                   "color": box["color"], "label": box["label"], "vcolors": box.get("vcolors")}
     return cloth_out, box_out
 
 
@@ -354,6 +355,15 @@ class Fold:
         self.viewer.show_triangles = False          # we draw the cloth ourselves (textured)
         self.viewer.show_particles = False
         self.tri_flat = wp.array(self.model.tri_indices.numpy().reshape(-1).astype(np.int32), dtype=wp.int32)
+        # FAITHFUL: bake the real SAM3D per-vertex colours onto the deforming cloth (unwelded per frame)
+        self.cloth_bake = None
+        if self.faithful and self.fcloth.get("vcolors") is not None:
+            faces = self.model.tri_indices.numpy().reshape(-1, 3)
+            vcol = self.fcloth["vcolors"]
+            _, rf, uv, tex = sam3d_scene.bake_colors(np.zeros((len(vcol), 3), np.float32), faces, vcol)
+            self.cloth_bake = {"faceidx": faces.reshape(-1), "rfaces": wp.array(rf, dtype=wp.int32),
+                               "uvs": wp.array(uv, dtype=wp.vec2), "tex": tex}
+            print(f"[FOLD] cloth colours = real SAM3D per-vertex (baked)", flush=True)
         if self.sil_uvs is not None:                 # silhouette: UVs precomputed per kept vertex
             self.uvs = wp.array(self.sil_uvs.astype(np.float32), dtype=wp.vec2)
         else:
@@ -379,12 +389,18 @@ class Fold:
         self.box_walls_viz = []
         self.cloth_solid_color = self.fcloth["color"] if self.faithful else (0.3, 0.28, 0.32)
         if self.faithful and self.fbox is not None:
-            # the real SAM3D box mesh, as-is, at its calibrated place (cm -> m)
-            bv = self.fbox["verts"].astype(np.float32) * self.viz_scale
-            self.box_mesh_viz = (wp.array(bv, dtype=wp.vec3),
-                                 wp.array(self.fbox["faces"].reshape(-1).astype(np.int32), dtype=wp.int32),
-                                 tuple(self.fbox["color"]))
-            print(f"[FOLD] container = real SAM3D box mesh {len(bv)} verts", flush=True)
+            # the real SAM3D box mesh, as-is (cm -> m), with its real per-vertex colours baked
+            if self.fbox["vcolors"] is not None:
+                rv, rf, uv, tex = sam3d_scene.bake_colors(
+                    self.fbox["verts"], self.fbox["faces"], self.fbox["vcolors"])
+                self.box_mesh_viz = ("baked", wp.array(rv * self.viz_scale, dtype=wp.vec3),
+                                     wp.array(rf, dtype=wp.int32), wp.array(uv, dtype=wp.vec2), tex)
+            else:
+                bv = self.fbox["verts"].astype(np.float32) * self.viz_scale
+                self.box_mesh_viz = ("solid", wp.array(bv, dtype=wp.vec3),
+                                     wp.array(self.fbox["faces"].reshape(-1).astype(np.int32), dtype=wp.int32),
+                                     tuple(self.fbox["color"]))
+            print(f"[FOLD] container = real SAM3D box mesh (baked colours)", flush=True)
         boxobj = load_box_object(self.scene_dir) if (self.place_in_box and not self.faithful) else None
         if boxobj is not None:
             import trimesh
@@ -401,7 +417,7 @@ class Fold:
             vp[:, 0] += bcx / 100.0; vp[:, 1] += bcy / 100.0        # place (m); base sits on table top
             vp[:, 2] += (self.table_pos_cm[2] + self.table_hz) / 100.0
             self.box_mesh_viz = (
-                wp.array(vp, dtype=wp.vec3),
+                "solid", wp.array(vp, dtype=wp.vec3),
                 wp.array(f.reshape(-1).astype(np.int32), dtype=wp.int32),
                 tuple(bcol))
             print(f"[FOLD] container: real mesh {len(vp)} verts, colour {np.round(bcol,2)}", flush=True)
@@ -686,12 +702,30 @@ class Fold:
         for i, (sc, xf, col) in enumerate(self.box_walls_viz):
             self.viewer.log_shapes(f"/box_wall{i}", newton.GeoType.BOX, sc, xf, col)
         if self.box_mesh_viz is not None:
-            bpts, bidx, bcol = self.box_mesh_viz
-            self.viewer.log_mesh("container", bpts, bidx, color=bcol, backface_culling=False)
+            if self.box_mesh_viz[0] == "baked":
+                _, bpts, bidx, buv, btex = self.box_mesh_viz
+                self.viewer.log_mesh("container", bpts, bidx, uvs=buv, texture=btex,
+                                     color=(1.0, 1.0, 1.0), backface_culling=False)
+                ob = getattr(self.viewer, "objects", {}).get("container")
+                if ob is not None:
+                    r, m, c, _ = ob.material; ob.material = (r, m, c, 1.0)
+            else:
+                _, bpts, bidx, bcol = self.box_mesh_viz
+                self.viewer.log_mesh("container", bpts, bidx, color=bcol, backface_culling=False)
         # textured cloth (meter scale)
         if self.use_tex:
             self.viewer.log_mesh("cloth", self.viz_state.particle_q, self.tri_flat, uvs=self.uvs,
                                  texture=self.tex_img, color=(1.0, 1.0, 1.0), backface_culling=False)
+            o = getattr(self.viewer, "objects", {}).get("cloth")
+            if o is not None:
+                r, m, c, _ = o.material; o.material = (r, m, c, 1.0)
+        elif self.cloth_bake is not None:
+            # real SAM3D per-vertex colours on the deforming shirt: unweld current particle positions
+            pq = self.viz_state.particle_q.numpy()
+            rv = pq[self.cloth_bake["faceidx"]]        # (n_tris*3, 3) following the fold
+            self.viewer.log_mesh("cloth", wp.array(rv, dtype=wp.vec3), self.cloth_bake["rfaces"],
+                                 uvs=self.cloth_bake["uvs"], texture=self.cloth_bake["tex"],
+                                 color=(1.0, 1.0, 1.0), backface_culling=False)
             o = getattr(self.viewer, "objects", {}).get("cloth")
             if o is not None:
                 r, m, c, _ = o.material; o.material = (r, m, c, 1.0)
