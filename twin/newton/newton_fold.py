@@ -141,12 +141,17 @@ def faithful_objects(scene_dir, capture_dir, cloth_cx, cloth_cy, table_top):
     parts = {"cloth": cv}
     if box is not None:
         parts["box"] = calibrate(box)
-    # placement: common xy shift so cloth centroid -> fold zone (preserves the real box<->cloth
-    # offset); then snap EACH object's base to the table top (kills per-object recon z-noise)
+    # placement: cloth centroid -> fold zone, snapped to the table
     ccx, ccy = cv[:, 0].mean(), cv[:, 1].mean()
-    for p in parts.values():
-        p[:, 0] += cloth_cx - ccx; p[:, 1] += cloth_cy - ccy
-        p[:, 2] += table_top - p[:, 2].min()
+    cv[:, 0] += cloth_cx - ccx; cv[:, 1] += cloth_cy - ccy; cv[:, 2] += table_top - cv[:, 2].min()
+    if "box" in parts:
+        # separate the box from the shirt's fold zone (else it blocks the arm / looks stacked):
+        # place it just beyond the shirt's far (+y) edge, reachable, on the table
+        bx = parts["box"]
+        box_half_y = 0.5 * (bx[:, 1].max() - bx[:, 1].min())
+        tgt_x, tgt_y = cloth_cx, cv[:, 1].max() + box_half_y + 8.0
+        bx[:, 0] += tgt_x - bx[:, 0].mean(); bx[:, 1] += tgt_y - bx[:, 1].mean()
+        bx[:, 2] += table_top - bx[:, 2].min()
 
     cbb = [cv[:, 0].min(), cv[:, 0].max(), cv[:, 1].min(), cv[:, 1].max()]
     cloth_out = {"verts": cv.astype(np.float32), "faces": cloth["faces"].reshape(-1, 3),
@@ -521,7 +526,7 @@ class Fold:
                     [2.0, bcx, bcy, ZHI, *q, OPEN],        # retreat
                 ]
                 specs.append({"axis": "bundle"})
-            poses += [[1.5, -45.0, -50.0, ZHI, *q, OPEN]]   # clear away
+            poses += [[1.5, 0.0, -38.0, ZHI, *q, OPEN]]   # clear away (reachable retreat)
             self.robot_key_poses = np.array(poses, dtype=np.float32)
             self.fold_specs = specs
         self.targets = self.robot_key_poses[:, 1:]
@@ -593,6 +598,29 @@ class Fold:
         delta_q[-2] = self.target[-1] * 4.0 - q[-2]
         delta_q[-1] = self.target[-1] * 4.0 - q[-1]
         self.target_joint_qd.assign(delta_q)
+
+    def export_plan(self, path):
+        """Write the fold's geometric keyframe fingertip poses + obstacles in the FRANKA-BASE frame
+        (metres) for cuRobo to plan collision-free joint trajectories through."""
+        import json
+        base = np.array([-50.0, -50.0, 0.0])          # Franka base in world (cm)
+        kfs = []
+        for row in self.robot_key_poses:
+            x, y, z = float(row[1]), float(row[2]), float(row[3])
+            kfs.append({"dur": float(row[0]),
+                        "fingertip_m": [(x - base[0]) / 100.0, (y - base[1]) / 100.0, (z - base[2]) / 100.0],
+                        "gripper": "open" if float(row[8]) > 0.4 else "closed"})
+        obstacles = [{"name": "table", "center_m": [0.5, 0.0, 0.1], "dims_m": [0.8, 0.8, 0.2]}]
+        if self.fbox is not None:
+            bv = self.fbox["verts"].astype(np.float64)
+            c = ((bv.max(0) + bv.min(0)) / 2.0 - base) / 100.0
+            d = (bv.max(0) - bv.min(0)) / 100.0
+            obstacles.append({"name": "box", "center_m": c.tolist(), "dims_m": d.tolist()})
+        json.dump({"keyframes": kfs, "obstacles": obstacles,
+                   "down_quat_wxyz": [0.0, 1.0, 0.0, 0.0], "ee_offset_z": 0.105,
+                   "home_js": [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741]},
+                  open(path, "w"), indent=2)
+        print(f"[FOLD] exported {len(kfs)} keyframes + {len(obstacles)} obstacles -> {path}", flush=True)
 
     # ----------------------------- grasp (pin) -----------------------------
     def update_grasp(self):
@@ -749,6 +777,7 @@ def main():
     ap.add_argument("--cloth_max", type=float, default=0.38, help="cap cloth dimension (m) for reachability")
     ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
+    ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--no_texture", action="store_true")
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--screenshot", default=None, help="PNG glob: save frames at fold milestones")
@@ -762,6 +791,9 @@ def main():
         viewer = ViewerNull(num_frames=10 ** 9)
 
     ex = Fold(viewer, args)
+    if args.export_plan:                             # stage 1: export poses for cuRobo, then exit
+        ex.export_plan(args.export_plan)
+        return
     if args.viewer == "gl":                          # AFTER set_model() (which auto-frames the scene)
         cx, cy, cz, cp, cyaw = (float(v) for v in args.cam.split(","))
         viewer.set_camera(wp.vec3(cx, cy, cz), cp, cyaw)
