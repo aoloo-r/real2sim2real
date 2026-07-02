@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 
 import numpy as np
@@ -30,7 +31,42 @@ from newton import Model, ModelBuilder, State, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 from newton.viewer import ViewerGL, ViewerNull
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sam3d_scene  # noqa: E402  faithful SAM3D loader (real meshes/colours/poses)
+
 CLOTH_KW = ("fabric", "cloth", "towel", "shirt", "blanket", "napkin", "garment", "sheet", "scarf", "rag")
+BOX_KW = ("box", "bag", "container", "basket", "crate", "bin", "carton", "tray")
+
+
+def masked_grid(dim_x, dim_y, cell, mask, box_px, img):
+    """Build a flat cloth grid (local frame, centred) but keep only the triangles whose vertices fall
+    inside the object's segmentation mask -> the cloth takes the real SILHOUETTE (e.g. a shirt shape).
+    Returns (vertices Nx3, triangle indices flat, uvs Nx2) mapped to the object's pixel box."""
+    nx, ny = dim_x + 1, dim_y + 1
+    bx0, by0, bx1, by1 = box_px; W, H = img
+    verts = np.zeros((nx * ny, 3), np.float32)
+    uvs = np.zeros((nx * ny, 2), np.float32)
+    inside = np.ones(nx * ny, bool)
+    for j in range(ny):
+        for i in range(nx):
+            k = j * nx + i
+            verts[k] = [(i - dim_x / 2.0) * cell, (j - dim_y / 2.0) * cell, 0.0]
+            u, v = i / dim_x, j / dim_y
+            px = bx0 + u * (bx1 - bx0); py = by0 + (1.0 - v) * (by1 - by0)   # match texture V-flip
+            uvs[k] = [px / W, py / H]
+            if mask is not None:
+                inside[k] = mask[int(np.clip(py, 0, H - 1)), int(np.clip(px, 0, W - 1))] > 127
+    tris = []
+    for j in range(dim_y):
+        for i in range(dim_x):
+            a = j * nx + i; b = a + 1; c = a + nx; d = c + 1
+            for tri in ((a, b, c), (b, d, c)):
+                if inside[tri[0]] and inside[tri[1]] and inside[tri[2]]:
+                    tris.append(tri)
+    tris = np.array(tris, np.int32)
+    used = np.unique(tris)
+    remap = -np.ones(nx * ny, np.int64); remap[used] = np.arange(len(used))
+    return verts[used], remap[tris].reshape(-1).astype(np.int32), uvs[used]
 DOWN_Q = (0.9239, -0.3827, 0.0, 0.0)   # gripper pointing down-ish (qw,qx,qy,qz), from the demo
 OPEN, CLOSE = 0.8, 0.1
 
@@ -80,17 +116,78 @@ def pin_to_ee(body_q: wp.array(dtype=wp.transform), ee_id: int, ee_off: wp.vec3,
     particle_qd[pidx] = wp.vec3(0.0, 0.0, 0.0)
 
 
+def faithful_objects(scene_dir, capture_dir, cloth_cx, cloth_cy, table_top):
+    """Import the SAM3D models AS-IS: real per-object mesh (Gemini-selected, SAM3D-built), calibrated
+    to its depth-measured size (only the overall scale is corrected — geometry untouched), then the
+    whole scene is rigidly translated so the cloth sits in the robot's fold zone on the table.
+    Returns cloth dict {verts(cm), faces, color, bbox} and box dict (or None)."""
+    sc = sam3d_scene.load_scene(scene_dir, capture_dir)
+    objs = sc["objects"]
+    cloth = next((o for o in objs if any(k in o["label"].lower() for k in CLOTH_KW)), None)
+    box = next((o for o in objs if any(k in o["label"].lower() for k in BOX_KW)), None)
+    if cloth is None:
+        return None, None
+
+    def calibrate(o):
+        v = o["verts"].astype(np.float64).copy()               # base-frame metres
+        c = v.mean(0)
+        fp = (v[:, :2].max(0) - v[:, :2].min(0)).max()          # footprint max dim (m)
+        meas = max([m for m in o["measured_m"] if m > 0] or [fp])
+        s = meas / fp if fp > 1e-6 else 1.0                     # scale mesh to measured size
+        v = (c + s * (v - c)) * 100.0                           # -> cm, scaled about centroid
+        return v
+
+    cv = calibrate(cloth)
+    parts = {"cloth": cv}
+    if box is not None:
+        parts["box"] = calibrate(box)
+    # placement: common xy shift so cloth centroid -> fold zone (preserves the real box<->cloth
+    # offset); then snap EACH object's base to the table top (kills per-object recon z-noise)
+    ccx, ccy = cv[:, 0].mean(), cv[:, 1].mean()
+    for p in parts.values():
+        p[:, 0] += cloth_cx - ccx; p[:, 1] += cloth_cy - ccy
+        p[:, 2] += table_top - p[:, 2].min()
+
+    cbb = [cv[:, 0].min(), cv[:, 0].max(), cv[:, 1].min(), cv[:, 1].max()]
+    cloth_out = {"verts": cv.astype(np.float32), "faces": cloth["faces"].reshape(-1, 3),
+                 "color": cloth["color"], "bbox": cbb, "label": cloth["label"]}
+    box_out = None
+    if box is not None:
+        box_out = {"verts": parts["box"].astype(np.float32), "faces": box["faces"].reshape(-1, 3),
+                   "color": box["color"], "label": box["label"]}
+    return cloth_out, box_out
+
+
 def load_cloth_spec(scene_dir):
     import json
     layout = json.load(open(os.path.join(scene_dir, "scene_layout.json")))
     objs = layout.get("objects", [])
-    o = next((o for o in objs if any(k in str(o.get("label", "")).lower() for k in CLOTH_KW)), objs[0])
+    idx = next((i for i, o in enumerate(objs) if any(k in str(o.get("label", "")).lower() for k in CLOTH_KW)), 0)
+    o = objs[idx]
     di = o.get("depth_info") or {}
     w = float(di.get("physical_width_m") or o.get("physical_size_m") or 0.35)
     h = float(di.get("physical_height_m") or w)
     img = layout.get("image_size_px", [640, 480])
     box = o.get("box_px") or [0, 0, img[0], img[1]]
-    return w, h, str(o.get("label", "cloth")), box, img
+    return w, h, str(o.get("label", "cloth")), box, img, idx
+
+
+def load_box_object(scene_dir):
+    """Find the container object (box/bag/...) -> (mesh_path, mean_color, idx) or None."""
+    import json
+    layout = json.load(open(os.path.join(scene_dir, "scene_layout.json")))
+    objs = layout.get("objects", [])
+    idx = next((i for i, o in enumerate(objs) if any(k in str(o.get("label", "")).lower() for k in BOX_KW)), None)
+    if idx is None:
+        return None
+    o = objs[idx]
+    mp = os.path.join(scene_dir, o.get("mesh_path") or f"object_{idx}/mesh.obj")
+    vc_path = os.path.join(scene_dir, f"object_{idx}/vertex_colors.npy")
+    if os.path.exists(vc_path):                       # true reconstructed colour (more accurate)
+        col = list(np.load(vc_path).reshape(-1, 3).mean(0)[:3])
+    else:
+        col = o.get("display_color") or [0.59, 0.57, 0.54]
+    return mp, [float(c) for c in col[:3]], idx
 
 
 class Fold:
@@ -110,11 +207,18 @@ class Fold:
         self.box = [float(v) for v in args.box.split(",")]   # cx,cy,w,d,h (cm)
 
         # cloth footprint + texture
-        w, h, label, box, img = load_cloth_spec(args.scene_dir)
+        self.scene_dir = args.scene_dir
+        w, h, label, box, img, cloth_idx = load_cloth_spec(args.scene_dir)
         w = min(w, args.cloth_max); h = min(h, args.cloth_max)   # cap for Franka reach
         cap = args.capture_dir or args.scene_dir.replace("/outputs/", "/captures/")
         self.rgb_path = os.path.join(cap, "rgb.png")
-        self.use_tex = (not args.no_texture) and os.path.exists(self.rgb_path)
+        self.use_tex = (not args.no_texture) and (not args.faithful) and os.path.exists(self.rgb_path)
+        # shirt SILHOUETTE: cut the cloth grid to the object's real segmentation mask
+        self.sil_mask = None
+        mask_path = os.path.join(args.scene_dir + "_sam3d_raw", "masks", f"{cloth_idx}.png")
+        if (not args.no_silhouette) and os.path.exists(mask_path):
+            from PIL import Image
+            self.sil_mask = np.array(Image.open(mask_path).convert("L"))
         S = 100.0
         cell = 2.0                                   # cm
         self.dim_x = max(2, round(w * S / cell)); self.dim_y = max(2, round(h * S / cell))
@@ -124,8 +228,18 @@ class Fold:
         self.cell = cell
         xh, yh = cloth_w / 2.0, cloth_h / 2.0
         self.init_bbox = [self.cloth_cx - xh, self.cloth_cx + xh, self.cloth_cy - yh, self.cloth_cy + yh]
+        # FAITHFUL: import the real SAM3D meshes as-is (overrides grid/silhouette + bbox)
+        self.faithful = args.faithful
+        self.fcloth = self.fbox = None
+        if self.faithful:
+            self.fcloth, self.fbox = faithful_objects(args.scene_dir, cap,
+                                                      self.cloth_cx, self.cloth_cy, self.cloth_top)
+            self.init_bbox = list(self.fcloth["bbox"])
+            print(f"[FOLD] FAITHFUL import: cloth '{self.fcloth['label']}' "
+                  f"{len(self.fcloth['verts'])} verts, box "
+                  f"{'yes' if self.fbox is not None else 'none'}", flush=True)
         print(f"[FOLD] '{label}' {w*100:.0f}x{h*100:.0f}cm -> grid {self.dim_x}x{self.dim_y}, "
-              f"mode={self.fold_mode} folds={self.folds}", flush=True)
+              f"mode={self.fold_mode} folds={self.folds} faithful={self.faithful}", flush=True)
 
         self.scene = ModelBuilder(gravity=-981.0)
 
@@ -159,13 +273,35 @@ class Fold:
                 self.scene.add_shape_box(-1, wp.transform((cx, cy, cz), wp.quat_identity()),
                                          hx=hx, hy=hy, hz=hz)
 
-        # cloth grid (centred), resting just above the table top
-        self.scene.add_cloth_grid(
-            pos=wp.vec3(self.cloth_cx - 0.5 * cloth_w, self.cloth_cy - 0.5 * cloth_h, self.cloth_top),
-            rot=wp.quat_identity(), vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=self.dim_x, dim_y=self.dim_y, cell_x=cell, cell_y=cell, mass=0.1,
-            tri_ke=1.0e4, tri_ka=1.0e4, tri_kd=1.5e-6, edge_ke=5.0, edge_kd=1.0e-2,
-            particle_radius=0.8)
+        # cloth (centred), resting just above the table top
+        self.sil_uvs = None
+        if self.faithful:
+            # the REAL SAM3D shirt mesh, imported as-is, IS the deformable
+            fv = self.fcloth["verts"]; ff = self.fcloth["faces"]
+            self.scene.add_cloth_mesh(
+                pos=wp.vec3(0.0, 0.0, 0.0), rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0, 0.0, 0.0),
+                vertices=[wp.vec3(*v) for v in fv], indices=ff.reshape(-1).tolist(), density=0.02,
+                tri_ke=1.0e4, tri_ka=1.0e4, tri_kd=1.5e-6, edge_ke=5.0, edge_kd=1.0e-2,
+                particle_radius=0.5)
+            print(f"[FOLD] cloth = real SAM3D mesh: {len(fv)} verts, {len(ff)} tris", flush=True)
+        elif self.sil_mask is not None:
+            # SILHOUETTE: cut the grid to the real shirt shape via the segmentation mask
+            verts, tris, uvs = masked_grid(self.dim_x, self.dim_y, cell, self.sil_mask, box, img)
+            self.sil_uvs = uvs
+            self.scene.add_cloth_mesh(
+                pos=wp.vec3(self.cloth_cx, self.cloth_cy, self.cloth_top),
+                rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0, 0.0, 0.0),
+                vertices=[wp.vec3(*v) for v in verts], indices=tris.tolist(), density=0.02,
+                tri_ke=1.0e4, tri_ka=1.0e4, tri_kd=1.5e-6, edge_ke=5.0, edge_kd=1.0e-2,
+                particle_radius=0.8)
+            print(f"[FOLD] cloth SILHOUETTE: {len(verts)} verts, {len(tris)//3} tris (from {label} mask)", flush=True)
+        else:
+            self.scene.add_cloth_grid(
+                pos=wp.vec3(self.cloth_cx - 0.5 * cloth_w, self.cloth_cy - 0.5 * cloth_h, self.cloth_top),
+                rot=wp.quat_identity(), vel=wp.vec3(0.0, 0.0, 0.0),
+                dim_x=self.dim_x, dim_y=self.dim_y, cell_x=cell, cell_y=cell, mass=0.1,
+                tri_ke=1.0e4, tri_ka=1.0e4, tri_kd=1.5e-6, edge_ke=5.0, edge_kd=1.0e-2,
+                particle_radius=0.8)
         self.scene.color()
         self.scene.add_ground_plane()
 
@@ -218,12 +354,15 @@ class Fold:
         self.viewer.show_triangles = False          # we draw the cloth ourselves (textured)
         self.viewer.show_particles = False
         self.tri_flat = wp.array(self.model.tri_indices.numpy().reshape(-1).astype(np.int32), dtype=wp.int32)
-        pq0 = self.state_0.particle_q.numpy()
-        nx = (pq0[:, 0] - pq0[:, 0].min()) / max(1e-6, np.ptp(pq0[:, 0]))
-        ny = (pq0[:, 1] - pq0[:, 1].min()) / max(1e-6, np.ptp(pq0[:, 1]))
-        bx0, by0, bx1, by1 = box
-        uu = (bx0 + nx * (bx1 - bx0)) / img[0]; vv = (by0 + (1.0 - ny) * (by1 - by0)) / img[1]
-        self.uvs = wp.array(np.stack([uu, vv], 1).astype(np.float32), dtype=wp.vec2)
+        if self.sil_uvs is not None:                 # silhouette: UVs precomputed per kept vertex
+            self.uvs = wp.array(self.sil_uvs.astype(np.float32), dtype=wp.vec2)
+        else:
+            pq0 = self.state_0.particle_q.numpy()
+            nx = (pq0[:, 0] - pq0[:, 0].min()) / max(1e-6, np.ptp(pq0[:, 0]))
+            ny = (pq0[:, 1] - pq0[:, 1].min()) / max(1e-6, np.ptp(pq0[:, 1]))
+            bx0, by0, bx1, by1 = box
+            uu = (bx0 + nx * (bx1 - bx0)) / img[0]; vv = (by0 + (1.0 - ny) * (by1 - by0)) / img[1]
+            self.uvs = wp.array(np.stack([uu, vv], 1).astype(np.float32), dtype=wp.vec2)
         self.tex_img = None
         if self.use_tex:
             from newton._src.utils.texture import load_texture
@@ -234,14 +373,45 @@ class Fold:
              float(self.table_pos_cm[2]) * self.viz_scale), wp.quat_identity())], dtype=wp.transform)
         self.table_viz_scale = (self.table_hx * self.viz_scale, self.table_hy * self.viz_scale, self.table_hz * self.viz_scale)
         self.table_viz_color = wp.array([wp.vec3(0.55, 0.55, 0.58)], dtype=wp.vec3)
-        # container wall viz (meters)
+        # container viz: render the REAL reconstructed box mesh (true shape + colour), top opened.
+        # Physics still uses the invisible open walls above; this is appearance only.
+        self.box_mesh_viz = None
         self.box_walls_viz = []
-        for (cx, cy, cz, hx, hy, hz) in self.box_walls:
-            self.box_walls_viz.append((
-                (hx * self.viz_scale, hy * self.viz_scale, hz * self.viz_scale),
-                wp.array([wp.transform((cx * self.viz_scale, cy * self.viz_scale, cz * self.viz_scale),
-                                       wp.quat_identity())], dtype=wp.transform),
-                wp.array([wp.vec3(0.62, 0.47, 0.32)], dtype=wp.vec3)))
+        self.cloth_solid_color = self.fcloth["color"] if self.faithful else (0.3, 0.28, 0.32)
+        if self.faithful and self.fbox is not None:
+            # the real SAM3D box mesh, as-is, at its calibrated place (cm -> m)
+            bv = self.fbox["verts"].astype(np.float32) * self.viz_scale
+            self.box_mesh_viz = (wp.array(bv, dtype=wp.vec3),
+                                 wp.array(self.fbox["faces"].reshape(-1).astype(np.int32), dtype=wp.int32),
+                                 tuple(self.fbox["color"]))
+            print(f"[FOLD] container = real SAM3D box mesh {len(bv)} verts", flush=True)
+        boxobj = load_box_object(self.scene_dir) if (self.place_in_box and not self.faithful) else None
+        if boxobj is not None:
+            import trimesh
+            mp, bcol, _ = boxobj
+            bm = trimesh.load(mp, force="mesh")
+            v = np.asarray(bm.vertices, np.float32); f = np.asarray(bm.faces, np.int64)
+            v[:, :2] -= 0.5 * (v[:, :2].min(0) + v[:, :2].max(0))   # centre footprint at origin
+            v[:, 2] -= v[:, 2].min()                                # base at z=0
+            ztop = v[:, 2].max()
+            keep = v[f].mean(1)[:, 2] < 0.82 * ztop                 # drop the top cap -> open box
+            f = f[keep]
+            bcx, bcy = self.box[0], self.box[1]
+            vp = v.copy()
+            vp[:, 0] += bcx / 100.0; vp[:, 1] += bcy / 100.0        # place (m); base sits on table top
+            vp[:, 2] += (self.table_pos_cm[2] + self.table_hz) / 100.0
+            self.box_mesh_viz = (
+                wp.array(vp, dtype=wp.vec3),
+                wp.array(f.reshape(-1).astype(np.int32), dtype=wp.int32),
+                tuple(bcol))
+            print(f"[FOLD] container: real mesh {len(vp)} verts, colour {np.round(bcol,2)}", flush=True)
+        else:
+            for (cx, cy, cz, hx, hy, hz) in self.box_walls:        # fallback: flat walls
+                self.box_walls_viz.append((
+                    (hx * self.viz_scale, hy * self.viz_scale, hz * self.viz_scale),
+                    wp.array([wp.transform((cx * self.viz_scale, cy * self.viz_scale, cz * self.viz_scale),
+                                           wp.quat_identity())], dtype=wp.transform),
+                    wp.array([wp.vec3(0.59, 0.57, 0.54)], dtype=wp.vec3)))
 
         # meter-scale shape data for the robot (the example's two-path swap)
         self.sim_shape_transform = self.model.shape_transform; self.sim_shape_scale = self.model.shape_scale
@@ -515,6 +685,9 @@ class Fold:
                                self.table_viz_xform, self.table_viz_color)
         for i, (sc, xf, col) in enumerate(self.box_walls_viz):
             self.viewer.log_shapes(f"/box_wall{i}", newton.GeoType.BOX, sc, xf, col)
+        if self.box_mesh_viz is not None:
+            bpts, bidx, bcol = self.box_mesh_viz
+            self.viewer.log_mesh("container", bpts, bidx, color=bcol, backface_culling=False)
         # textured cloth (meter scale)
         if self.use_tex:
             self.viewer.log_mesh("cloth", self.viz_state.particle_q, self.tri_flat, uvs=self.uvs,
@@ -524,7 +697,7 @@ class Fold:
                 r, m, c, _ = o.material; o.material = (r, m, c, 1.0)
         else:
             self.viewer.log_mesh("cloth", self.viz_state.particle_q, self.tri_flat,
-                                 color=(0.3, 0.28, 0.32), backface_culling=False)
+                                 color=self.cloth_solid_color, backface_culling=False)
         self.viewer.end_frame()
         self.model.shape_transform = self.sim_shape_transform; self.model.shape_scale = self.sim_shape_scale
 
@@ -538,8 +711,10 @@ def main():
     ap.add_argument("--folds", type=int, default=3, help="number of alternating half-folds (multi mode)")
     ap.add_argument("--pins", type=int, default=2, help="corner particles pinned (corner mode only)")
     ap.add_argument("--place_in_box", action="store_true", help="after folding, pick the bundle and place it in the box")
-    ap.add_argument("--box", default="-33,-40,27,27,10", help="container cx,cy,width,depth,wall_height (cm)")
+    ap.add_argument("--box", default="-33,-40,27,29,15", help="container cx,cy,width,depth,wall_height (cm)")
     ap.add_argument("--cloth_max", type=float, default=0.38, help="cap cloth dimension (m) for reachability")
+    ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
+    ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
     ap.add_argument("--no_texture", action="store_true")
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--screenshot", default=None, help="PNG glob: save frames at fold milestones")

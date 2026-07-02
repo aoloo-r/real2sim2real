@@ -62,10 +62,13 @@ def load_scene(scene_dir, capture_dir):
             col = list(np.median(np.load(vc_path).reshape(-1, 3), axis=0)[:3])
         else:
             col = o.get("display_color") or [0.6, 0.6, 0.6]
+        di = o.get("depth_info") or {}
+        meas = [float(di.get("physical_width_m") or 0.0), float(di.get("physical_height_m") or 0.0)]
         objs.append({
             "label": str(o.get("label", f"object_{i}")),
             "idx": i, "verts": v_base.astype(np.float32), "faces": faces.astype(np.int32),
             "uvs": uvs, "rgb": rgb_path, "color": tuple(float(c) for c in col[:3]),
+            "measured_m": meas,
         })
     # tabletop scene: everything rests on one table plane -> snap each object's base to it
     # (removes reconstruction z-noise that leaves objects floating)
