@@ -18,6 +18,26 @@ import numpy as np
 import trimesh
 
 
+def bake_colors(verts, faces, vcol):
+    """Render the real SAM3D per-vertex colours in a viewer that only supports texture/flat colour.
+    Each triangle gets ONE texel = the mean of its 3 vertex colours; all 3 of its (unwelded) verts
+    point at that texel, so the UV is constant across the triangle -> exact colour, no bleed.
+    Returns (render_verts, render_faces, uvs, texture_uint8)."""
+    faces = faces.reshape(-1, 3)
+    n = len(faces)
+    tri_col = vcol[faces].mean(1)                       # (n,3) in [0,1]
+    w = int(np.ceil(np.sqrt(n))); h = int(np.ceil(n / w))
+    small = np.zeros((h * w, 3), np.float32); small[:n] = tri_col
+    B = 4                                              # pad each texel to a BxB block (kills bilinear bleed)
+    tex = np.repeat(np.repeat(np.clip(small.reshape(h, w, 3), 0, 1), B, axis=0), B, axis=1)
+    tex = (tex * 255).astype(np.uint8)
+    rverts = verts[faces].reshape(-1, 3).astype(np.float32)     # unwelded: 3 verts per triangle
+    ii = np.arange(n); u = (ii % w + 0.5) / w; v = 1.0 - (ii // w + 0.5) / h   # block centre (V flipped)
+    uv = np.repeat(np.stack([u, v], 1).astype(np.float32), 3, axis=0)
+    rfaces = np.arange(n * 3, dtype=np.int32)
+    return rverts, rfaces, uv, tex
+
+
 def _quat2mat(q):
     x, y, z, w = q
     return np.array([
@@ -39,13 +59,17 @@ def load_scene(scene_dir, capture_dir):
     objs = []
     for i, o in enumerate(layout.get("objects", [])):
         mp = os.path.join(scene_dir, o.get("mesh_path") or f"object_{i}/mesh.obj")
-        m = trimesh.load(mp, force="mesh")
-        try:                                              # denoise the raw reconstruction (keeps shape)
-            trimesh.smoothing.filter_humphrey(m, alpha=0.1, beta=0.5, iterations=12)
-        except Exception:
-            pass
+        m = trimesh.load(mp, force="mesh", process=False)   # process=False -> preserve vert order/colours
         vcanon = np.asarray(m.vertices, np.float64)
         faces = np.asarray(m.faces, np.int64)
+        # per-vertex colours from the aligned .npy (same order as the untouched mesh verts)
+        vc_path = os.path.join(scene_dir, f"object_{i}/vertex_colors.npy")
+        if os.path.exists(vc_path):
+            vcol = np.load(vc_path).reshape(-1, 3).astype(np.float32)
+            if len(vcol) != len(vcanon):
+                vcol = None
+        else:
+            vcol = None
         ic = o["icp_pose"]
         R = _quat2mat(ic["rotation_cam"]); s = float(ic["scale"]); t = np.asarray(ic["position_cam"], np.float64)
         v_cam = (s * (R @ vcanon.T)).T + t                       # canonical -> camera frame
@@ -68,7 +92,7 @@ def load_scene(scene_dir, capture_dir):
             "label": str(o.get("label", f"object_{i}")),
             "idx": i, "verts": v_base.astype(np.float32), "faces": faces.astype(np.int32),
             "uvs": uvs, "rgb": rgb_path, "color": tuple(float(c) for c in col[:3]),
-            "measured_m": meas,
+            "measured_m": meas, "vcolors": vcol,
         })
     # tabletop scene: everything rests on one table plane -> snap each object's base to it
     # (removes reconstruction z-noise that leaves objects floating)
@@ -90,6 +114,8 @@ if __name__ == "__main__":
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--screenshot", default=None)
     ap.add_argument("--cam", default=None, help="x,y,z,pitch,yaw (m)")
+    ap.add_argument("--solid", action="store_true", help="solid median colour")
+    ap.add_argument("--projective", action="store_true", help="project the rgb photo (smears on angled faces)")
     args = ap.parse_args()
     cap = args.capture_dir or args.scene_dir.replace("/outputs/", "/captures/")
 
@@ -109,6 +135,15 @@ if __name__ == "__main__":
                            [ctr[0]+L, ctr[1]+L, zmin], [ctr[0]-L, ctr[1]+L, zmin]], np.float32), dtype=wp.vec3)
     gi = wp.array(np.array([0, 1, 2, 0, 2, 3], np.int32), dtype=wp.int32)
 
+    # bake the real SAM3D per-vertex colours into per-triangle texels (correct colours, no smear)
+    baked = []
+    for o in sc["objects"]:
+        if o["vcolors"] is not None and not args.solid and not args.projective:
+            rv, rf, ruv, tex = bake_colors(o["verts"], o["faces"], o["vcolors"])
+            baked.append((wp.array(rv, dtype=wp.vec3), wp.array(rf, dtype=wp.int32),
+                          wp.array(ruv, dtype=wp.vec2), tex))
+        else:
+            baked.append(None)
     pts = [wp.array(o["verts"], dtype=wp.vec3) for o in sc["objects"]]
     idx = [wp.array(o["faces"].reshape(-1), dtype=wp.int32) for o in sc["objects"]]
     uvs = [wp.array(o["uvs"], dtype=wp.vec2) for o in sc["objects"]]
@@ -119,12 +154,28 @@ if __name__ == "__main__":
     else:
         viewer.set_camera(wp.vec3(ctr[0] + 0.6, ctr[1] - 0.9, zmin + 0.7), -32, 115)
 
+    rgb = sc["rgb"]
+
     def draw(t):
         viewer.begin_frame(t)
         viewer.log_mesh("ground", g, gi, color=(0.25, 0.25, 0.27))
         for k, o in enumerate(sc["objects"]):
-            # solid per-object colour on the real SAM3D mesh (what looked good before), shaded
-            viewer.log_mesh(o["label"], pts[k], idx[k], color=o["color"], backface_culling=False)
+            if baked[k] is not None:
+                # REAL SAM3D per-vertex colours (yellow shirt + logo, tan box), baked -> exact, no smear
+                rv, rf, ruv, tex = baked[k]
+                viewer.log_mesh(o["label"], rv, rf, uvs=ruv, texture=tex,
+                                color=(1.0, 1.0, 1.0), backface_culling=False)
+                ob = viewer.objects.get(o["label"])
+                if ob is not None:
+                    r, mm, c, _ = ob.material; ob.material = (r, mm, c, 1.0)
+            elif args.projective:
+                viewer.log_mesh(o["label"], pts[k], idx[k], uvs=uvs[k], texture=rgb,
+                                color=(1.0, 1.0, 1.0), backface_culling=False)
+                ob = viewer.objects.get(o["label"])
+                if ob is not None:
+                    r, mm, c, _ = ob.material; ob.material = (r, mm, c, 1.0)
+            else:
+                viewer.log_mesh(o["label"], pts[k], idx[k], color=o["color"], backface_culling=False)
         viewer.end_frame()
 
     for f in range(4):
