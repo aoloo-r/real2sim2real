@@ -116,7 +116,7 @@ def pin_to_ee(body_q: wp.array(dtype=wp.transform), ee_id: int, ee_off: wp.vec3,
     particle_qd[pidx] = wp.vec3(0.0, 0.0, 0.0)
 
 
-def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top, scene_yaw=0.0):
+def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top, scene_yaw=0.0, flip_box=False):
     """Import the SAM3D models AS-IS: real per-object mesh (Gemini-selected, SAM3D-built), calibrated
     to its depth-measured size (only the overall scale is corrected — geometry untouched), then the
     whole scene is rigidly translated so the cloth sits in the robot's fold zone on the table.
@@ -148,12 +148,17 @@ def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top, scen
     for p in parts.values():
         p[:, 0] += franka_x; p[:, 1] += franka_y
         p[:, 2] += table_top - p[:, 2].min()
-    # align the SHIRT orientation to reality: rotate ONLY the shirt about its own centre (flips its
-    # top to face away from the robot) — the box stays at its real reconstructed position
+    # align the SHIRT orientation to reality: rotate ONLY the shirt about its own centre
     if abs(scene_yaw) > 1e-6:
         th = np.radians(scene_yaw); ct, st = np.cos(th), np.sin(th)
         R = np.array([[ct, -st], [st, ct]]); c = cv[:, :2].mean(0)
         cv[:, :2] = (cv[:, :2] - c) @ R.T + c
+    # optionally move the box to the opposite side of the shirt (translate, keep orientation) — needed
+    # after putting the robot on the far side, which reverses the apparent box side
+    if flip_box and "box" in parts:
+        sc = cv[:, :2].mean(0); bc = parts["box"][:, :2].mean(0)
+        parts["box"][:, 0] += (2 * sc[0] - bc[0]) - bc[0]
+        parts["box"][:, 1] += (2 * sc[1] - bc[1]) - bc[1]
 
     cbb = [cv[:, 0].min(), cv[:, 0].max(), cv[:, 1].min(), cv[:, 1].max()]
     cloth_out = {"verts": cv.astype(np.float32), "faces": cloth["faces"].reshape(-1, 3),
@@ -242,8 +247,8 @@ class Fold:
         self.faithful = args.faithful
         self.fcloth = self.fbox = None
         if self.faithful:
-            self.fcloth, self.fbox = faithful_objects(args.scene_dir, cap,
-                                                      -50.0, -50.0, self.cloth_top, args.scene_yaw)
+            self.fcloth, self.fbox = faithful_objects(args.scene_dir, cap, -50.0, -50.0,
+                                                      self.cloth_top, args.scene_yaw, args.flip_box)
             self.init_bbox = list(self.fcloth["bbox"])
             print(f"[FOLD] FAITHFUL import: cloth '{self.fcloth['label']}' "
                   f"{len(self.fcloth['verts'])} verts, box "
@@ -483,20 +488,11 @@ class Fold:
 
     # ----------------------------- robot setup + keyframes -----------------------------
     def create_articulation(self, builder):
-        # robot base: OPPOSITE side of the objects (user: robot should be on the far side, facing across
-        # the table), ~5cm ABOVE the table top, facing the objects
+        # robot base = ur5e_base_link, IDENTITY orientation (so the hand-eye camera pose matches the
+        # real capture), ~5cm above the table top. Objects are at v_base relative to this -> the robot
+        # camera view reproduces the real photo (box left, shirt right).
         rq = wp.quat_identity()
-        if self.faithful and self.fcloth is not None:
-            ov = self.fcloth["verts"][:, :2]
-            if self.fbox is not None:
-                ov = np.vstack([ov, self.fbox["verts"][:, :2]])
-            oc = ov.mean(0)
-            rxy = 2.0 * oc - np.array([-50.0, -50.0])           # reflect default base through the objects
-            face = np.arctan2(oc[1] - rxy[1], oc[0] - rxy[0]) + np.radians(self.base_yaw_deg)
-            self.robot_base = (float(rxy[0]), float(rxy[1]), 25.0)
-            rq = wp.quat(0.0, 0.0, float(np.sin(face / 2)), float(np.cos(face / 2)))
-        else:
-            self.robot_base = (-50.0, -50.0, 25.0)
+        self.robot_base = (-50.0, -50.0, 25.0)
         if self.arm == "ur5e":
             from ur5e_gripper import add_ur5e_gripper
             w3, dof0, n_arm, pinch = add_ur5e_gripper(builder, wp.transform(self.robot_base, rq), scale=100.0)
@@ -873,6 +869,7 @@ def main():
     ap.add_argument("--arm", default="franka", choices=["franka", "ur5e"], help="robot arm (ur5e = real UR5e+Robotiq)")
     ap.add_argument("--base_yaw", type=float, default=0.0, help="extra base-facing yaw offset (deg) for the arm")
     ap.add_argument("--scene_yaw", type=float, default=0.0, help="rotate layout about the shirt (deg); 0 = as reconstructed (no flip)")
+    ap.add_argument("--flip_box", action="store_true", default=False, help="put the box on the opposite side of the shirt")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
     ap.add_argument("--no_texture", action="store_true")
@@ -904,6 +901,7 @@ def main():
         # a shot just after every release (grip OPEN following CLOSE), plus the final result
         grips = ex.robot_key_poses[:, -1]
         rels = [i for i in range(1, len(grips)) if grips[i] > 0.4 >= grips[i - 1]]
+        shots[3] = f"{base}_start.png"                  # initial layout (compare to the robot photo)
         for k, i in enumerate(rels):
             shots[int(ex.robot_key_poses_time[i] * ex.fps)] = f"{base}_step{k+1}.png"
         shots[n_frames - 1] = f"{base}_done.png"
