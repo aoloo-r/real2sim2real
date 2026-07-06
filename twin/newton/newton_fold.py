@@ -868,7 +868,7 @@ def main():
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
     ap.add_argument("--arm", default="franka", choices=["franka", "ur5e"], help="robot arm (ur5e = real UR5e+Robotiq)")
     ap.add_argument("--base_yaw", type=float, default=0.0, help="extra base-facing yaw offset (deg) for the arm")
-    ap.add_argument("--scene_yaw", type=float, default=0.0, help="rotate layout about the shirt (deg); 0 = as reconstructed (no flip)")
+    ap.add_argument("--scene_yaw", type=float, default=180.0, help="rotate ONLY the shirt about its centre (deg) to correct its reconstructed orientation")
     ap.add_argument("--flip_box", action="store_true", default=False, help="put the box on the opposite side of the shirt")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
