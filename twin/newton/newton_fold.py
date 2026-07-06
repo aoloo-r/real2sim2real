@@ -218,6 +218,7 @@ class Fold:
         self.next_fold = 0
         self.arm = args.arm
         self.base_yaw_deg = args.base_yaw
+        self.max_reach = args.reach
         self.place_in_box = args.place_in_box
         self.box = [float(v) for v in args.box.split(",")]   # cx,cy,w,d,h (cm)
 
@@ -665,9 +666,17 @@ class Fold:
             self.target_joint_qd.zero_(); return
         interval = int(np.searchsorted(self.robot_key_poses_time, self.sim_time))
         self.target = self.targets[interval]
+        # REACH CLAMP: never command the arm past a comfortable radius from its base (avoid overstretch
+        # on far edges / the box). The pin still grabs the full edge (by shirt geometry), the arm just
+        # holds it from a non-overextended pose.
+        tgt = np.array(self.target[:7], dtype=float)
+        rb = np.array([self.robot_base[0], self.robot_base[1]])
+        dxy = tgt[:2] - rb; r = float(np.linalg.norm(dxy))
+        if r > self.max_reach:
+            tgt[:2] = rb + dxy / r * self.max_reach
         wp.launch(compute_ee_delta, dim=1,
                   inputs=[state_in.body_q, self.endeffector_offset, self.endeffector_id,
-                          self.bodies_per_world, wp.transform(*self.target[:7])],
+                          self.bodies_per_world, wp.transform(*tgt)],
                   outputs=[self.ee_delta])
         self.compute_body_jacobian(state_in.joint_q, state_in.joint_qd)
         J = self.J_flat.numpy().reshape(-1, self.model.joint_dof_count)
@@ -876,6 +885,7 @@ def main():
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
     ap.add_argument("--arm", default="franka", choices=["franka", "ur5e"], help="robot arm (ur5e = real UR5e+Robotiq)")
     ap.add_argument("--base_yaw", type=float, default=0.0, help="extra base-facing yaw offset (deg) for the arm")
+    ap.add_argument("--reach", type=float, default=72.0, help="comfortable arm reach radius (cm); targets clamped to it to avoid overstretch")
     ap.add_argument("--scene_yaw", type=float, default=180.0, help="rotate ONLY the shirt about its centre (deg) to correct its reconstructed orientation")
     ap.add_argument("--flip_box", action="store_true", default=False, help="put the box on the opposite side of the shirt")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
