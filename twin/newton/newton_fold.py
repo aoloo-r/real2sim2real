@@ -116,7 +116,7 @@ def pin_to_ee(body_q: wp.array(dtype=wp.transform), ee_id: int, ee_off: wp.vec3,
     particle_qd[pidx] = wp.vec3(0.0, 0.0, 0.0)
 
 
-def faithful_objects(scene_dir, capture_dir, cloth_cx, cloth_cy, table_top):
+def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top):
     """Import the SAM3D models AS-IS: real per-object mesh (Gemini-selected, SAM3D-built), calibrated
     to its depth-measured size (only the overall scale is corrected — geometry untouched), then the
     whole scene is rigidly translated so the cloth sits in the robot's fold zone on the table.
@@ -141,17 +141,13 @@ def faithful_objects(scene_dir, capture_dir, cloth_cx, cloth_cy, table_top):
     parts = {"cloth": cv}
     if box is not None:
         parts["box"] = calibrate(box)
-    # placement: cloth centroid -> fold zone, snapped to the table
-    ccx, ccy = cv[:, 0].mean(), cv[:, 1].mean()
-    cv[:, 0] += cloth_cx - ccx; cv[:, 1] += cloth_cy - ccy; cv[:, 2] += table_top - cv[:, 2].min()
-    if "box" in parts:
-        # separate the box from the shirt's fold zone (else it blocks the arm / looks stacked):
-        # place it just beyond the shirt's far (+y) edge, reachable, on the table
-        bx = parts["box"]
-        box_half_y = 0.5 * (bx[:, 1].max() - bx[:, 1].min())
-        tgt_x, tgt_y = cloth_cx, cv[:, 1].max() + box_half_y + 8.0
-        bx[:, 0] += tgt_x - bx[:, 0].mean(); bx[:, 1] += tgt_y - bx[:, 1].mean()
-        bx[:, 2] += table_top - bx[:, 2].min()
+    # FAITHFUL placement: keep each object at its REAL reconstructed position relative to the robot
+    # (ur5e_base_link frame), with the Franka standing in for the base at (franka_x, franka_y). The
+    # real robot-relative layout (shirt in front, box offset in +y) is preserved; only z is snapped
+    # to the table to remove reconstruction depth-noise.
+    for p in parts.values():
+        p[:, 0] += franka_x; p[:, 1] += franka_y
+        p[:, 2] += table_top - p[:, 2].min()
 
     cbb = [cv[:, 0].min(), cv[:, 0].max(), cv[:, 1].min(), cv[:, 1].max()]
     cloth_out = {"verts": cv.astype(np.float32), "faces": cloth["faces"].reshape(-1, 3),
@@ -239,7 +235,7 @@ class Fold:
         self.fcloth = self.fbox = None
         if self.faithful:
             self.fcloth, self.fbox = faithful_objects(args.scene_dir, cap,
-                                                      self.cloth_cx, self.cloth_cy, self.cloth_top)
+                                                      -50.0, -50.0, self.cloth_top)   # Franka base xy (cm)
             self.init_bbox = list(self.fcloth["bbox"])
             print(f"[FOLD] FAITHFUL import: cloth '{self.fcloth['label']}' "
                   f"{len(self.fcloth['verts'])} verts, box "
