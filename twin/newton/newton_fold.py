@@ -265,9 +265,10 @@ class Fold:
             allv = self.fcloth["verts"][:, :2]
             if self.fbox is not None:
                 allv = np.vstack([allv, self.fbox["verts"][:, :2]])
-            xmin = min(allv[:, 0].min(), -45.0); xmax = allv[:, 0].max()
-            ymin = min(allv[:, 1].min(), -55.0); ymax = allv[:, 1].max()
-            M = 14.0                                    # margin
+            # COMPACT table under the objects only (do NOT extend back to the robot base)
+            xmin, xmax = allv[:, 0].min(), allv[:, 0].max()
+            ymin, ymax = allv[:, 1].min(), allv[:, 1].max()
+            M = 12.0                                    # margin
             self.table_pos_cm = wp.vec3((xmin + xmax) / 2, (ymin + ymax) / 2, 10.0)
             self.table_hx = (xmax - xmin) / 2 + M; self.table_hy = (ymax - ymin) / 2 + M
         else:
@@ -275,6 +276,12 @@ class Fold:
         self.table_shape_idx = self.scene.shape_count
         self.scene.add_shape_box(-1, wp.transform(self.table_pos_cm, wp.quat_identity()),
                                  hx=self.table_hx, hy=self.table_hy, hz=self.table_hz)
+        # pedestal / mobile base under the robot (floor -> robot base) so it isn't floating/buried
+        rbx, rby, rbz = self.robot_base
+        self.ped_pos = wp.vec3(rbx, rby, rbz / 2.0); self.ped_h = (14.0, 14.0, rbz / 2.0)
+        self.ped_shape_idx = self.scene.shape_count
+        self.scene.add_shape_box(-1, wp.transform(self.ped_pos, wp.quat_identity()),
+                                 hx=self.ped_h[0], hy=self.ped_h[1], hz=self.ped_h[2])
 
         # open-top container (4 walls on the table top) at the captured box's real dimensions
         self.box_shape_idx = []
@@ -330,6 +337,7 @@ class Fold:
         # hide table from auto shape rendering (GL bakes prim dims, ignores scale) -> draw manually
         flags = self.model.shape_flags.numpy()
         flags[self.table_shape_idx] &= ~int(newton.ShapeFlags.VISIBLE)
+        flags[self.ped_shape_idx] &= ~int(newton.ShapeFlags.VISIBLE)
         for si in self.box_shape_idx:                 # walls drawn manually at m-scale too
             flags[si] &= ~int(newton.ShapeFlags.VISIBLE)
         self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
@@ -402,6 +410,12 @@ class Fold:
              float(self.table_pos_cm[2]) * self.viz_scale), wp.quat_identity())], dtype=wp.transform)
         self.table_viz_scale = (self.table_hx * self.viz_scale, self.table_hy * self.viz_scale, self.table_hz * self.viz_scale)
         self.table_viz_color = wp.array([wp.vec3(0.55, 0.55, 0.58)], dtype=wp.vec3)
+        # pedestal viz (meters)
+        self.ped_viz_xform = wp.array([wp.transform(
+            (float(self.ped_pos[0]) * self.viz_scale, float(self.ped_pos[1]) * self.viz_scale,
+             float(self.ped_pos[2]) * self.viz_scale), wp.quat_identity())], dtype=wp.transform)
+        self.ped_viz_scale = tuple(h * self.viz_scale for h in self.ped_h)
+        self.ped_viz_color = wp.array([wp.vec3(0.3, 0.3, 0.33)], dtype=wp.vec3)
         # container viz: render the REAL reconstructed box mesh (true shape + colour), top opened.
         # Physics still uses the invisible open walls above; this is appearance only.
         self.box_mesh_viz = None
@@ -468,16 +482,18 @@ class Fold:
 
     # ----------------------------- robot setup + keyframes -----------------------------
     def create_articulation(self, builder):
+        # robot base sits ~5cm ABOVE the table top (real UR5e-base-to-table height), not buried in it
+        self.robot_base = (-50.0, -50.0, 25.0)
         if self.arm == "ur5e":
             from ur5e_gripper import add_ur5e_gripper
             w3, dof0, n_arm, pinch = add_ur5e_gripper(
-                builder, wp.transform((-50.0, -50.0, 0.0), wp.quat_identity()), scale=100.0)
+                builder, wp.transform(self.robot_base, wp.quat_identity()), scale=100.0)
             self.ur5e_w3 = w3; self.n_arm = n_arm; self.pinch_local = pinch
             print(f"[FOLD] arm = UR5e + Robotiq 2F-85 ({n_arm} arm dof, {builder.joint_dof_count - dof0 - n_arm} gripper dof)", flush=True)
         else:
             asset_path = newton.utils.download_asset("franka_emika_panda")
             builder.add_urdf(str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-                             xform=wp.transform((-50.0, -50.0, 0.0), wp.quat_identity()),
+                             xform=wp.transform(self.robot_base, wp.quat_identity()),
                              floating=False, scale=100, enable_self_collisions=False,
                              collapse_fixed_joints=True, force_show_colliders=False)
             builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
@@ -790,6 +806,8 @@ class Fold:
         self.viewer.log_state(self.viz_state)       # robot only (triangles hidden)
         self.viewer.log_shapes("/table", newton.GeoType.BOX, self.table_viz_scale,
                                self.table_viz_xform, self.table_viz_color)
+        self.viewer.log_shapes("/pedestal", newton.GeoType.BOX, self.ped_viz_scale,
+                               self.ped_viz_xform, self.ped_viz_color)
         for i, (sc, xf, col) in enumerate(self.box_walls_viz):
             self.viewer.log_shapes(f"/box_wall{i}", newton.GeoType.BOX, sc, xf, col)
         if self.box_mesh_viz is not None:
@@ -841,7 +859,7 @@ def main():
     ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
     ap.add_argument("--arm", default="franka", choices=["franka", "ur5e"], help="robot arm (ur5e = real UR5e+Robotiq)")
-    ap.add_argument("--scene_yaw", type=float, default=180.0, help="rotate layout about the shirt (deg) to align to reality")
+    ap.add_argument("--scene_yaw", type=float, default=0.0, help="rotate layout about the shirt (deg); 0 = as reconstructed (no flip)")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
     ap.add_argument("--no_texture", action="store_true")
