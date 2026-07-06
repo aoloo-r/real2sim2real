@@ -211,6 +211,7 @@ class Fold:
         self.fold_mode = args.fold_mode
         self.folds = args.folds
         self.next_fold = 0
+        self.arm = args.arm
         self.place_in_box = args.place_in_box
         self.box = [float(v) for v in args.box.split(",")]   # cx,cy,w,d,h (cm)
 
@@ -467,12 +468,20 @@ class Fold:
 
     # ----------------------------- robot setup + keyframes -----------------------------
     def create_articulation(self, builder):
-        asset_path = newton.utils.download_asset("franka_emika_panda")
-        builder.add_urdf(str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-                         xform=wp.transform((-50.0, -50.0, 0.0), wp.quat_identity()),
-                         floating=False, scale=100, enable_self_collisions=False,
-                         collapse_fixed_joints=True, force_show_colliders=False)
-        builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
+        if self.arm == "ur5e":
+            from ur5e_gripper import add_ur5e_gripper
+            w3, dof0, n_arm, pinch = add_ur5e_gripper(
+                builder, wp.transform((-50.0, -50.0, 0.0), wp.quat_identity()), scale=100.0)
+            self.ur5e_w3 = w3; self.n_arm = n_arm; self.pinch_local = pinch
+            print(f"[FOLD] arm = UR5e + Robotiq 2F-85 ({n_arm} arm dof, {builder.joint_dof_count - dof0 - n_arm} gripper dof)", flush=True)
+        else:
+            asset_path = newton.utils.download_asset("franka_emika_panda")
+            builder.add_urdf(str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
+                             xform=wp.transform((-50.0, -50.0, 0.0), wp.quat_identity()),
+                             floating=False, scale=100, enable_self_collisions=False,
+                             collapse_fixed_joints=True, force_show_colliders=False)
+            builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
+            self.n_arm = 7
 
         q = DOWN_Q
         if self.fold_mode == "corner":
@@ -545,10 +554,13 @@ class Fold:
         self.targets = self.robot_key_poses[:, 1:]
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
         self.target = self.targets[0]
-        self.endeffector_id = builder.body_count - 3
-        # control the FINGERTIP (not a virtual point 22cm below the hand) so the fingers
-        # actually descend to the cloth and make contact
-        self.endeffector_offset = wp.transform([0.0, 0.0, 11.0], wp.quat_identity())
+        if self.arm == "ur5e":
+            self.endeffector_id = self.ur5e_w3               # wrist_3
+            self.endeffector_offset = wp.transform(list(self.pinch_local), wp.quat_identity())
+        else:
+            self.endeffector_id = builder.body_count - 3
+            # control the FINGERTIP (not a virtual point below the hand) so the fingers contact the cloth
+            self.endeffector_offset = wp.transform([0.0, 0.0, 11.0], wp.quat_identity())
 
     def set_up_control(self):
         self.control = self.model.control()
@@ -628,9 +640,19 @@ class Fold:
         self.compute_body_jacobian(state_in.joint_q, state_in.joint_qd)
         J = self.J_flat.numpy().reshape(-1, self.model.joint_dof_count)
         delta_target = self.ee_delta.numpy()[0]
+        q = state_in.joint_q.numpy()
+        if self.arm == "ur5e":
+            # restrict IK to the 6 arm joints; HOLD the gripper joints at their home (frozen open)
+            na = self.n_arm
+            # POSITION-ONLY IK: bring the pinch point to the target (orientation free — DOWN_Q is the
+            # Franka's convention, not the UR5e's; the pin grasps the pinch point regardless)
+            dq_arm = np.linalg.pinv(J[:3, :na]) @ delta_target[:3] * 3.0   # gain for faster convergence
+            delta_q = np.zeros(self.model.joint_dof_count)   # gripper dofs -> 0 velocity (held open)
+            delta_q[:na] = dq_arm
+            self.target_joint_qd.assign(delta_q)
+            return
         J_inv = np.linalg.pinv(J)
         N = np.eye(J.shape[1], dtype=np.float32) - J_inv @ J
-        q = state_in.joint_q.numpy()
         q_des = q.copy(); q_des[1:] = self.initial_pose[1:]
         delta_q = J_inv @ delta_target + N @ (1.0 * (q_des - q))
         delta_q[-2] = self.target[-1] * 4.0 - q[-2]
@@ -670,22 +692,25 @@ class Fold:
         self.prev_grip = grip
 
     def _grasp(self):
-        # the actual pinch point = midpoint of the two fingertip bodies, extended to the pad tips,
-        # so the cloth is held WHERE THE FINGERS ARE (visible contact) -- not at an abstract EE offset
         bq = self.state_0.body_q.numpy()
         hand = bq[self.endeffector_id, :3]
         q6 = bq[self.endeffector_id, 3:7]                 # (x,y,z,w)
-        fmid = 0.5 * (bq[-2, :3] + bq[-1, :3])            # bodies -2,-1 are the two fingers
-        adir = fmid - hand; n = np.linalg.norm(adir)
-        adir = adir / n if n > 1e-6 else np.array([0.0, 0.0, -1.0])
-        pinch = fmid + 3.0 * adir                         # ~pad tip, just past the finger bodies
 
         def qrot(q, v):                                   # rotate v by quaternion q (x,y,z,w)
             x, y, z, w = q; t = 2.0 * np.cross([x, y, z], v)
             return np.asarray(v) + w * t + np.cross([x, y, z], t)
-        qinv = np.array([-q6[0], -q6[1], -q6[2], q6[3]])
-        self.ee_off_vec = wp.vec3(*qrot(qinv, pinch - hand).astype(float))  # pinch in hand-local frame
-                                                          # -> pin kernel now tracks the fingertips
+        if self.arm == "ur5e":
+            # gripper pinch point = fixed offset in the wrist_3 frame (2F-85 has no simple finger bodies)
+            self.ee_off_vec = wp.vec3(*self.pinch_local)
+            pinch = hand + qrot(q6, np.array(list(self.pinch_local)))
+        else:
+            # pinch = midpoint of the two fingertip bodies, extended to the pad tips
+            fmid = 0.5 * (bq[-2, :3] + bq[-1, :3])        # bodies -2,-1 are the two fingers
+            adir = fmid - hand; n = np.linalg.norm(adir)
+            adir = adir / n if n > 1e-6 else np.array([0.0, 0.0, -1.0])
+            pinch = fmid + 3.0 * adir                     # ~pad tip, just past the finger bodies
+            qinv = np.array([-q6[0], -q6[1], -q6[2], q6[3]])
+            self.ee_off_vec = wp.vec3(*qrot(qinv, pinch - hand).astype(float))  # pinch in hand-local frame
 
         pq = self.state_0.particle_q.numpy()
         if self.fold_mode == "corner":
@@ -815,6 +840,7 @@ def main():
     ap.add_argument("--cloth_max", type=float, default=0.38, help="cap cloth dimension (m) for reachability")
     ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
+    ap.add_argument("--arm", default="franka", choices=["franka", "ur5e"], help="robot arm (ur5e = real UR5e+Robotiq)")
     ap.add_argument("--scene_yaw", type=float, default=180.0, help="rotate layout about the shirt (deg) to align to reality")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
