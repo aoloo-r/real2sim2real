@@ -766,11 +766,12 @@ class Fold:
             axis = self.fold_specs[min(self.next_fold, len(self.fold_specs) - 1)]["axis"]
             self.next_fold += 1
             if axis == "bundle":
-                # grab the whole folded bundle: particles within a radius of the fingertip (xy)
-                d2 = np.linalg.norm(pq[:, :2] - pinch[:2], axis=1)
-                idx = np.where(d2 < 9.0)[0]
+                # grab the WHOLE folded bundle (rigid lift) — radius covers the compact bundle so we
+                # pick it all up, not just the central patch, so it goes into the box in one piece
+                d2 = np.linalg.norm(pq[:, :2] - pq[:, :2].mean(0), axis=1)
+                idx = np.where(d2 < 20.0)[0]           # ~whole bundle from its own centroid
                 if len(idx) < 4:
-                    idx = np.argsort(d2)[:24]
+                    idx = np.arange(len(pq))
                 what = f"bundle ({len(idx)} particles)"
             else:
                 col = 1 if axis == "y" else 0
