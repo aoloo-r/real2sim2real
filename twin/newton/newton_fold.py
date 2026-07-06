@@ -578,7 +578,32 @@ class Fold:
             wp.copy(self.J_flat[i * in_dim:(i + 1) * in_dim], joint_qd.grad)
             tape.zero()
 
+    def load_exec_plan(self, path):
+        """Load a cuRobo joint trajectory and flatten it to a time-indexed arm-joint path."""
+        import json
+        traj = json.load(open(path))
+        ts, qs, gs = [], [], []
+        t = 0.0
+        for s in traj["segments"]:
+            q = s["q"]; dur = float(s["dur"]); grip = 0.1 if s["gripper"] == "closed" else 0.8
+            n = len(q)
+            for j, qj in enumerate(q):
+                ts.append(t + dur * (j / (n - 1) if n > 1 else 0.0)); qs.append(qj); gs.append(grip)
+            t += dur
+        self.exec_t = np.array(ts); self.exec_q = np.array(qs, np.float64); self.exec_g = np.array(gs)
+        self.exec_total = t; self.exec_mode = True; self.cur_grip = 0.8
+        print(f"[FOLD] EXEC cuRobo trajectory: {len(ts)} waypoints over {t:.1f}s", flush=True)
+
     def generate_control_joint_qd(self, state_in):
+        if getattr(self, "exec_mode", False):          # execute the cuRobo joint trajectory
+            i = int(np.clip(np.searchsorted(self.exec_t, self.sim_time), 0, len(self.exec_t) - 1))
+            qt = self.exec_q[i]; self.cur_grip = float(self.exec_g[i])
+            q = state_in.joint_q.numpy()
+            dq = np.zeros(self.model.joint_dof_count)
+            dq[:7] = qt - q[:7]                         # drive arm joints toward the planned config
+            dq[-2] = self.cur_grip * 4.0 - q[-2]; dq[-1] = self.cur_grip * 4.0 - q[-1]
+            self.target_joint_qd.assign(dq)
+            return
         if self.sim_time >= self.robot_key_poses_time[-1]:
             self.target_joint_qd.zero_(); return
         interval = int(np.searchsorted(self.robot_key_poses_time, self.sim_time))
@@ -624,7 +649,7 @@ class Fold:
 
     # ----------------------------- grasp (pin) -----------------------------
     def update_grasp(self):
-        grip = float(self.target[-1])
+        grip = float(self.cur_grip) if getattr(self, "exec_mode", False) else float(self.target[-1])
         if self.prev_grip > 0.4 and grip <= 0.4:        # close -> grasp
             self._grasp()
         elif self.prev_grip <= 0.4 and grip > 0.4:      # open -> release
@@ -778,6 +803,7 @@ def main():
     ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
+    ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
     ap.add_argument("--no_texture", action="store_true")
     ap.add_argument("--hold", type=float, default=1800.0)
     ap.add_argument("--screenshot", default=None, help="PNG glob: save frames at fold milestones")
@@ -794,10 +820,13 @@ def main():
     if args.export_plan:                             # stage 1: export poses for cuRobo, then exit
         ex.export_plan(args.export_plan)
         return
+    if args.exec_plan:                               # stage 3: execute the cuRobo trajectory
+        ex.load_exec_plan(args.exec_plan)
     if args.viewer == "gl":                          # AFTER set_model() (which auto-frames the scene)
         cx, cy, cz, cp, cyaw = (float(v) for v in args.cam.split(","))
         viewer.set_camera(wp.vec3(cx, cy, cz), cp, cyaw)
-    n_frames = int(ex.robot_key_poses_time[-1] * ex.fps) + 30
+    sched_end = ex.exec_total if getattr(ex, "exec_mode", False) else ex.robot_key_poses_time[-1]
+    n_frames = int(sched_end * ex.fps) + 30
     shots = {}
     if args.screenshot:
         base = args.screenshot.replace(".png", "")

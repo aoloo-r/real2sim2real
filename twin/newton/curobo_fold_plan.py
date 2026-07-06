@@ -22,6 +22,7 @@ from curobo.types.math import Pose as CuPose
 from curobo.types.state import JointState as CuJointState
 from curobo.geom.types import WorldConfig, Cuboid
 from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig, MotionGenPlanConfig
+from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
 
 JN = ["panda_joint1", "panda_joint2", "panda_joint3", "panda_joint4",
       "panda_joint5", "panda_joint6", "panda_joint7"]
@@ -54,6 +55,31 @@ def main():
         num_trajopt_seeds=12, num_graph_seeds=12, interpolation_dt=0.02, use_cuda_graph=False)
     mg = MotionGen(cfg); mg.warmup(warmup_js_trajopt=False)
     pc = MotionGenPlanConfig(enable_graph=True, max_attempts=30, enable_finetune_trajopt=True)
+    # IK fallback: when collision-free PLANNING fails at a reach-edge pose, still get a joint config
+    ik = IKSolver(IKSolverConfig.load_from_robot_config(
+        "franka.yml", world, tensor_args=ta, num_seeds=40,
+        self_collision_check=True, self_collision_opt=True))
+
+    def _qmul(a, b):
+        w1, x1, y1, z1 = a; w2, x2, y2, z2 = b
+        return [w1*w2-x1*x2-y1*y2-z1*z2, w1*x2+x1*w2+y1*z2-z1*y2,
+                w1*y2-x1*z2+y1*w2+z1*x2, w1*z2+x1*y2-y1*x2+z1*w2]
+
+    def _tilt(axis, deg):
+        r = np.radians(deg) / 2; s = np.sin(r)
+        return _qmul([np.cos(r), axis[0]*s, axis[1]*s, axis[2]*s], P["down_quat_wxyz"])
+
+    # down-ish orientation candidates (the pin grasp works for any of them)
+    ORI = [P["down_quat_wxyz"]] + [_tilt(ax, d) for ax in ([1, 0, 0], [0, 1, 0]) for d in (20, -20, 40, -40)]
+
+    def ik_config(hand_pos):
+        for q in ORI:
+            goal = CuPose(position=torch.tensor([hand_pos.tolist()], device="cuda"),
+                          quaternion=torch.tensor([q], device="cuda", dtype=torch.float32))
+            r = ik.solve_batch(goal)
+            if bool(r.success.view(-1).any()):
+                return r.solution.detach().cpu().numpy().reshape(-1, 7)[0]
+        return None
 
     down = torch.tensor([P["down_quat_wxyz"]], device="cuda")
     off = float(P["ee_offset_z"])
@@ -78,8 +104,16 @@ def main():
             segments.append({"q": traj.tolist(), "gripper": kf["gripper"], "dur": kf["dur"]})
             print(f"  kf{i:2d} {kf['gripper']:6s} -> planned {len(traj)} wpts", flush=True)
         else:
-            segments.append({"q": [cur.cpu().numpy()[0].tolist()], "gripper": kf["gripper"], "dur": kf["dur"]})
-            print(f"  kf{i:2d} {kf['gripper']:6s} -> FAILED (hold)", flush=True)
+            q_ik = ik_config(hand)                     # planning failed -> IK + joint interpolation
+            if q_ik is not None:
+                q0 = cur.cpu().numpy()[0]
+                seg = [(q0 + (q_ik - q0) * a).tolist() for a in np.linspace(0, 1, 30)]
+                cur = torch.tensor([q_ik.tolist()], device="cuda")
+                segments.append({"q": seg, "gripper": kf["gripper"], "dur": kf["dur"]})
+                print(f"  kf{i:2d} {kf['gripper']:6s} -> IK fallback ({len(seg)} wpts)", flush=True)
+            else:
+                segments.append({"q": [cur.cpu().numpy()[0].tolist()], "gripper": kf["gripper"], "dur": kf["dur"]})
+                print(f"  kf{i:2d} {kf['gripper']:6s} -> FAILED (hold)", flush=True)
         prev_pos = hand
 
     n_ok = sum(1 for s in segments if len(s["q"]) > 1)
