@@ -257,9 +257,20 @@ class Fold:
         self.scene.add_world(franka)
         self.bodies_per_world = franka.body_count
 
-        # table
-        self.table_pos_cm = wp.vec3(0.0, -50.0, 10.0)
-        self.table_hx, self.table_hy, self.table_hz = 40.0, 40.0, 10.0
+        # table — sized to actually cover the real object layout (else objects placed at their real
+        # positions hang off the small default table). Extend toward the robot base too.
+        self.table_hz = 10.0
+        if self.faithful and self.fcloth is not None:
+            allv = self.fcloth["verts"][:, :2]
+            if self.fbox is not None:
+                allv = np.vstack([allv, self.fbox["verts"][:, :2]])
+            xmin = min(allv[:, 0].min(), -45.0); xmax = allv[:, 0].max()
+            ymin = min(allv[:, 1].min(), -55.0); ymax = allv[:, 1].max()
+            M = 14.0                                    # margin
+            self.table_pos_cm = wp.vec3((xmin + xmax) / 2, (ymin + ymax) / 2, 10.0)
+            self.table_hx = (xmax - xmin) / 2 + M; self.table_hy = (ymax - ymin) / 2 + M
+        else:
+            self.table_pos_cm = wp.vec3(0.0, -50.0, 10.0); self.table_hx = self.table_hy = 40.0
         self.table_shape_idx = self.scene.shape_count
         self.scene.add_shape_box(-1, wp.transform(self.table_pos_cm, wp.quat_identity()),
                                  hx=self.table_hx, hy=self.table_hy, hz=self.table_hz)
