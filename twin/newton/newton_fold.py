@@ -116,7 +116,7 @@ def pin_to_ee(body_q: wp.array(dtype=wp.transform), ee_id: int, ee_off: wp.vec3,
     particle_qd[pidx] = wp.vec3(0.0, 0.0, 0.0)
 
 
-def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top):
+def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top, scene_yaw=0.0):
     """Import the SAM3D models AS-IS: real per-object mesh (Gemini-selected, SAM3D-built), calibrated
     to its depth-measured size (only the overall scale is corrected — geometry untouched), then the
     whole scene is rigidly translated so the cloth sits in the robot's fold zone on the table.
@@ -148,6 +148,12 @@ def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top):
     for p in parts.values():
         p[:, 0] += franka_x; p[:, 1] += franka_y
         p[:, 2] += table_top - p[:, 2].min()
+    # align the SHIRT orientation to reality: rotate ONLY the shirt about its own centre (flips its
+    # top to face away from the robot) — the box stays at its real reconstructed position
+    if abs(scene_yaw) > 1e-6:
+        th = np.radians(scene_yaw); ct, st = np.cos(th), np.sin(th)
+        R = np.array([[ct, -st], [st, ct]]); c = cv[:, :2].mean(0)
+        cv[:, :2] = (cv[:, :2] - c) @ R.T + c
 
     cbb = [cv[:, 0].min(), cv[:, 0].max(), cv[:, 1].min(), cv[:, 1].max()]
     cloth_out = {"verts": cv.astype(np.float32), "faces": cloth["faces"].reshape(-1, 3),
@@ -235,7 +241,7 @@ class Fold:
         self.fcloth = self.fbox = None
         if self.faithful:
             self.fcloth, self.fbox = faithful_objects(args.scene_dir, cap,
-                                                      -50.0, -50.0, self.cloth_top)   # Franka base xy (cm)
+                                                      -50.0, -50.0, self.cloth_top, args.scene_yaw)
             self.init_bbox = list(self.fcloth["bbox"])
             print(f"[FOLD] FAITHFUL import: cloth '{self.fcloth['label']}' "
                   f"{len(self.fcloth['verts'])} verts, box "
@@ -798,6 +804,7 @@ def main():
     ap.add_argument("--cloth_max", type=float, default=0.38, help="cap cloth dimension (m) for reachability")
     ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
+    ap.add_argument("--scene_yaw", type=float, default=180.0, help="rotate layout about the shirt (deg) to align to reality")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
     ap.add_argument("--no_texture", action="store_true")
