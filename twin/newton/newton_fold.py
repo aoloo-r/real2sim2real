@@ -565,19 +565,24 @@ class Fold:
                 ]
                 specs.append({"axis": axis})
             if self.place_in_box:
-                # pick the folded bundle (centre of the final bbox) and place it in the container
+                # pick the folded bundle (centre of the final bbox) and place it NEATLY in the box:
+                # carry over the box centre, lower the bundle INSIDE (below the rim), release, then
+                # withdraw straight up out of the box.
                 bx, by = (bbox[0] + bbox[1]) / 2.0, (bbox[2] + bbox[3]) / 2.0
                 bcx, bcy, bw, bd, bh = self.box
                 box_top = 20.0 + bh                   # table top (z=20) + wall height
                 zgb = 22.0 + 1.3 * nf                 # grasp height ~ top of the folded stack
+                z_in = max(24.0, box_top - 7.0)       # inside the box, a few cm above its floor
                 poses += [
                     [2.0, bx, by, ZHI, *q, OPEN],          # approach above bundle
                     [1.5, bx, by, zgb, *q, OPEN],          # descend onto bundle
                     [1.2, bx, by, zgb, *q, CLOSE],         # grasp bundle
                     [2.0, bx, by, ZHI, *q, CLOSE],         # lift
-                    [2.5, bcx, bcy, ZHI, *q, CLOSE],       # carry over the box
-                    [2.0, bcx, bcy, box_top + 4.0, *q, CLOSE],  # lower to the rim
-                    [1.2, bcx, bcy, box_top + 4.0, *q, OPEN],   # release -> drops in
+                    [2.8, bcx, bcy, ZHI, *q, CLOSE],       # carry over the box centre
+                    [1.8, bcx, bcy, box_top + 3.0, *q, CLOSE],  # descend to just above the rim
+                    [1.8, bcx, bcy, z_in, *q, CLOSE],      # lower the bundle INSIDE the box
+                    [1.2, bcx, bcy, z_in, *q, OPEN],       # release inside
+                    [1.5, bcx, bcy, box_top + 4.0, *q, OPEN],   # withdraw straight up out of the box
                     [2.0, bcx, bcy, ZHI, *q, OPEN],        # retreat
                 ]
                 specs.append({"axis": "bundle"})
