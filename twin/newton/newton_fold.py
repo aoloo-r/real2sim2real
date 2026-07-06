@@ -212,6 +212,7 @@ class Fold:
         self.folds = args.folds
         self.next_fold = 0
         self.arm = args.arm
+        self.base_yaw_deg = args.base_yaw
         self.place_in_box = args.place_in_box
         self.box = [float(v) for v in args.box.split(",")]   # cx,cy,w,d,h (cm)
 
@@ -482,18 +483,29 @@ class Fold:
 
     # ----------------------------- robot setup + keyframes -----------------------------
     def create_articulation(self, builder):
-        # robot base sits ~5cm ABOVE the table top (real UR5e-base-to-table height), not buried in it
-        self.robot_base = (-50.0, -50.0, 25.0)
+        # robot base: OPPOSITE side of the objects (user: robot should be on the far side, facing across
+        # the table), ~5cm ABOVE the table top, facing the objects
+        rq = wp.quat_identity()
+        if self.faithful and self.fcloth is not None:
+            ov = self.fcloth["verts"][:, :2]
+            if self.fbox is not None:
+                ov = np.vstack([ov, self.fbox["verts"][:, :2]])
+            oc = ov.mean(0)
+            rxy = 2.0 * oc - np.array([-50.0, -50.0])           # reflect default base through the objects
+            face = np.arctan2(oc[1] - rxy[1], oc[0] - rxy[0]) + np.radians(self.base_yaw_deg)
+            self.robot_base = (float(rxy[0]), float(rxy[1]), 25.0)
+            rq = wp.quat(0.0, 0.0, float(np.sin(face / 2)), float(np.cos(face / 2)))
+        else:
+            self.robot_base = (-50.0, -50.0, 25.0)
         if self.arm == "ur5e":
             from ur5e_gripper import add_ur5e_gripper
-            w3, dof0, n_arm, pinch = add_ur5e_gripper(
-                builder, wp.transform(self.robot_base, wp.quat_identity()), scale=100.0)
+            w3, dof0, n_arm, pinch = add_ur5e_gripper(builder, wp.transform(self.robot_base, rq), scale=100.0)
             self.ur5e_w3 = w3; self.n_arm = n_arm; self.pinch_local = pinch
             print(f"[FOLD] arm = UR5e + Robotiq 2F-85 ({n_arm} arm dof, {builder.joint_dof_count - dof0 - n_arm} gripper dof)", flush=True)
         else:
             asset_path = newton.utils.download_asset("franka_emika_panda")
             builder.add_urdf(str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-                             xform=wp.transform(self.robot_base, wp.quat_identity()),
+                             xform=wp.transform(self.robot_base, rq),
                              floating=False, scale=100, enable_self_collisions=False,
                              collapse_fixed_joints=True, force_show_colliders=False)
             builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
@@ -859,6 +871,7 @@ def main():
     ap.add_argument("--no_silhouette", action="store_true", help="use a plain rectangle, not the real shirt shape")
     ap.add_argument("--faithful", action="store_true", help="import the real SAM3D meshes as-is (cloth+box)")
     ap.add_argument("--arm", default="franka", choices=["franka", "ur5e"], help="robot arm (ur5e = real UR5e+Robotiq)")
+    ap.add_argument("--base_yaw", type=float, default=0.0, help="extra base-facing yaw offset (deg) for the arm")
     ap.add_argument("--scene_yaw", type=float, default=0.0, help="rotate layout about the shirt (deg); 0 = as reconstructed (no flip)")
     ap.add_argument("--export_plan", default=None, help="write keyframe poses+obstacles (base frame) for cuRobo, then exit")
     ap.add_argument("--exec_plan", default=None, help="execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
