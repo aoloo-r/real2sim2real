@@ -253,6 +253,14 @@ class Fold:
             print(f"[FOLD] FAITHFUL import: cloth '{self.fcloth['label']}' "
                   f"{len(self.fcloth['verts'])} verts, box "
                   f"{'yes' if self.fbox is not None else 'none'}", flush=True)
+            # place-in-box targets the REAL box position (collision walls fitted to the real mesh)
+            if self.place_in_box and self.fbox is not None:
+                bv = self.fbox["verts"]
+                self.box = [float((bv[:, 0].min() + bv[:, 0].max()) / 2),
+                            float((bv[:, 1].min() + bv[:, 1].max()) / 2),
+                            float(bv[:, 0].max() - bv[:, 0].min()) - 3.0,   # inner width (minus wall)
+                            float(bv[:, 1].max() - bv[:, 1].min()) - 3.0,
+                            float(bv[:, 2].max() - bv[:, 2].min())]
         print(f"[FOLD] '{label}' {w*100:.0f}x{h*100:.0f}cm -> grid {self.dim_x}x{self.dim_y}, "
               f"mode={self.fold_mode} folds={self.folds} faithful={self.faithful}", flush=True)
 
