@@ -24,7 +24,6 @@ LANGUAGE ──► TASK PLAN ──► N CANDIDATE PLANS ──► PARALLEL SEAR
 | `twin_plan_search.py` | One goal → **N candidate plans**, varying task (action order) + motion (grasp strategy, placement). |
 | `ee_geometry.py` | **Shared grasp/place geometry** (single source of truth) — extracted from `real2sim_franka.export_ee_trajectory`; pure numpy, imported by both the twin and the compiler. |
 | `tamp_to_ee.py` | TAMP action plan → EE-trajectory JSON(s) (the motion compiler), via `ee_geometry`. |
-| `cgn_to_ee_traj.py` | Contact-GraspNet grasp → EE-trajectory JSON. |
 
 ### `perception/` — capture → detect (Gemini) → reconstruct (SAM 3D) → QA → `scene_layout.json`
 ### `transfer/` — sim → real UR5e (`ur5e_ee_executor.py` MoveIt, `transfer_to_robot.sh`)

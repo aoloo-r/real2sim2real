@@ -9,8 +9,8 @@ grasps where a binary pass/fail would be all-zero), then candidates are RANKED a
 the winner reported. This is what an open-loop TAMP/VLA baseline cannot do.
 
 v1 uses a solid cylinder target so physics cleanly discriminates good vs bad grasps
-(a centered grasp holds; an off-center one slips). Plugging in the real SAM3D mesh +
-Contact-GraspNet candidates is the next refinement.
+(a centered grasp holds; an off-center one slips). Plugging in the real SAM3D mesh
+is the next refinement.
 
 Run (GUI on :1):
   DISPLAY=:1 ./isaaclab.sh -p scripts/twin_grasp_eval.py --num_envs 8
