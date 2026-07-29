@@ -1,0 +1,426 @@
+diff --git a/cutamp/cost_function.py b/cutamp/cost_function.py
+index b6f7e5b..45d2f44 100644
+--- a/cutamp/cost_function.py
++++ b/cutamp/cost_function.py
+@@ -53,6 +53,20 @@ class CostFunction:
+         self.config = config
+         self._rollout_validated = False
+ 
++        # real2sim2real Fold: pose-timestep at which each folded garment's collision
++        # geometry swaps to its bundle set. Mirrors rollout's pose_ts accounting exactly
++        # (Place/PushStick/Fold each bump pose_ts; Fold records the post-bump index).
++        from cutamp.tamp_domain import Place as _Pl, PushStick as _PS, Fold as _Fd
++        self._fold_pose_ts = {}
++        _pts = 0
++        for _gop in plan_skeleton:
++            _nm = _gop.operator.name
++            if _nm == _Pl.name or _nm == _PS.name:
++                _pts += 1
++            elif _nm == _Fd.name:
++                _pts += 1
++                self._fold_pose_ts[_gop.values[0]] = _pts
++
+         # Accumulate the constraints, so we can batch them up when computing the costs
+         self.cfree_constraints = []
+         self.kinematic_constraints = []
+@@ -117,6 +131,16 @@ class CostFunction:
+             if surface in self.surface_to_aabb:
+                 continue
+ 
++            from cutamp.tilt_registry import SURFACE_TILT
++            if surface in SURFACE_TILT:
++                # tilted surface: bounds + floor are box-LOCAL (spheres get rotated into this frame)
++                t = SURFACE_TILT[surface]
++                x0, x1, y0, y1 = t["bounds"]
++                dev = world.device
++                self.surface_to_aabb[surface] = torch.tensor([[x0, y0], [x1, y1]], dtype=torch.float32, device=dev)
++                self.surface_to_target_z[surface] = float(t["floor_z"]) + world.collision_activation_distance + 2e-3
++                continue
++
+             aabb = world.get_aabb(surface)  # includes xyz
+             aabb_xy = aabb[:, :2]
+             self.surface_to_aabb[surface] = aabb_xy
+@@ -311,7 +335,21 @@ class CostFunction:
+ 
+             # Since objects can have different numbers of spheres, we need to concatenate instead of stack
+             spheres = torch.cat(surface_to_spheres[surface], dim=1)
+-            spheres_xy = spheres[..., :2]
++
++            # TILT-AWARE: for a tilted support surface, evaluate in-xy + support in the BOX-LOCAL
++            # frame (rotate sphere centres by R^T about the box origin), so "flat" checks apply to
++            # the tilted plane. Sphere xyz -> local; radius unchanged.
++            from cutamp.tilt_registry import SURFACE_TILT
++            if surface in SURFACE_TILT:
++                tinfo = SURFACE_TILT[surface]
++                R = tinfo["R"].to(spheres.device, spheres.dtype)
++                origin = tinfo["origin"].to(spheres.device, spheres.dtype)
++                local_xyz = (spheres[..., :3] - origin) @ R    # p_local = R^T (p - origin)
++                spheres_xy = local_xyz[..., :2]
++                spheres_bottom = local_xyz[..., 2] - spheres[..., 3]
++            else:
++                spheres_xy = spheres[..., :2]
++                spheres_bottom = spheres[..., 2] - spheres[..., 3]
+ 
+             # Within goal xy bounds, need to gather by the spheres for each object
+             in_goal_xy = dist_from_bounds_jit(spheres_xy, *self.surface_to_aabb[surface])
+@@ -319,8 +357,7 @@ class CostFunction:
+             obj_in_goal_xy.scatter_add_(1, sphere_idx_map_expand, in_goal_xy)
+             support_vals[f"{surface}_in_xy"] = obj_in_goal_xy
+ 
+-            # Distance between bottom of spheres and z-position of the surface
+-            spheres_bottom = spheres[..., 2] - spheres[..., 3]
++            # Distance between bottom of spheres and z-position of the surface (box-local for tilted)
+             obj_bottom = torch.full(
+                 (num_particles, len(objs)), float("inf"), dtype=spheres_bottom.dtype, device=spheres_bottom.device
+             )
+@@ -443,7 +480,26 @@ class CostFunction:
+             if obj.name in obj_to_spheres:
+                 raise RuntimeError(f"Object {obj.name} already in obj_to_spheres")
+             obj_pose = rollout["obj_to_pose"][obj.name]
+-            obj_spheres = transform_spheres(self.world.get_collision_spheres(obj), obj_pose)
++            base = self.world.get_collision_spheres(obj)
++            if obj.name in self._fold_pose_ts:
++                # real2sim2real Fold: FLAT spheres before the fold's pose-timestep,
++                # FOLDED bundle spheres from it on. Pad the smaller set by repeating its
++                # first sphere (duplicates are harmless in every cost), transform both,
++                # then select per timestep.
++                from cutamp.fold_registry import FOLDABLE
++                folded = FOLDABLE[obj.name]["folded_spheres"].to(base.device, base.dtype)
++                n = max(base.shape[0], folded.shape[0])
++
++                def _pad(s):
++                    return s if s.shape[0] == n else torch.cat(
++                        [s, s[:1].expand(n - s.shape[0], -1)], dim=0)
++                flat_tf = transform_spheres(_pad(base), obj_pose)
++                fold_tf = transform_spheres(_pad(folded), obj_pose)
++                t_mask = (torch.arange(obj_pose.shape[1], device=base.device)
++                          >= self._fold_pose_ts[obj.name])
++                obj_spheres = torch.where(t_mask[None, :, None, None], fold_tf, flat_tf)
++            else:
++                obj_spheres = transform_spheres(base, obj_pose)
+             obj_to_spheres[obj.name] = obj_spheres
+ 
+         # Collision costs
+diff --git a/cutamp/envs/utils.py b/cutamp/envs/utils.py
+index c859536..5c3370f 100644
+--- a/cutamp/envs/utils.py
++++ b/cutamp/envs/utils.py
+@@ -24,7 +24,7 @@ unit_pose = [0.0, 0.0, 0.0, *unit_quat]
+ 
+ 
+ class TAMPEnvironment:
+-    _known_types: ClassVar[Set[str]] = {"Movable", "Surface", "Button", "Stick"}
++    _known_types: ClassVar[Set[str]] = {"Movable", "Surface", "Button", "Stick", "Foldable"}
+ 
+     def __init__(
+         self,
+diff --git a/cutamp/fold_registry.py b/cutamp/fold_registry.py
+new file mode 100644
+index 0000000..4421e98
+--- /dev/null
++++ b/cutamp/fold_registry.py
+@@ -0,0 +1,21 @@
++"""Registry of FOLDABLE objects for the Fold operator (real2sim2real extension).
++
++A foldable garment starts as its FLAT collision geometry (thin slab at the perceived
++pose). The Fold operator swaps its collision spheres to the FOLDED bundle set (from the
++Newton twin's measured fold curve) for every timestep at and after the fold. Populated
++by the environment builder before run_cutamp; keyed by object name.
++
++Entry: {"folded_spheres": Tensor[n, 4] in the OBJECT frame — Tetris convention: the top
++grasp-handle sphere at z = 0, body hanging below (see run_sam3d_pack gotcha #2)}.
++"""
++from typing import Dict
++
++FOLDABLE: Dict[str, dict] = {}
++
++
++def register_foldable(name: str, folded_spheres) -> None:
++    FOLDABLE[name] = {"folded_spheres": folded_spheres}
++
++
++def clear() -> None:
++    FOLDABLE.clear()
+diff --git a/cutamp/particle_initialization.py b/cutamp/particle_initialization.py
+index 31b64a2..875777c 100644
+--- a/cutamp/particle_initialization.py
++++ b/cutamp/particle_initialization.py
+@@ -23,7 +23,7 @@ from cutamp.samplers import (
+     place_4dof_sampler,
+     sample_yaw,
+ )
+-from cutamp.tamp_domain import MoveFree, MoveHolding, Pick, Place, Push, PushStick
++from cutamp.tamp_domain import MoveFree, MoveHolding, Pick, Place, Push, PushStick, Fold
+ from cutamp.tamp_world import TAMPWorld
+ from cutamp.task_planning import PlanSkeleton
+ from cutamp.utils.common import (
+@@ -68,6 +68,17 @@ class ParticleInitializer:
+ 
+         # Note: we don't consider state after executing earlier samples
+         # Iterate through each ground operator in the plan skeleton and initialize and build up particles
++        folded_so_far = set()   # real2sim2real: objects folded earlier in THIS skeleton
++
++        def _spheres_for(obj_name):
++            """Collision spheres honouring a prior Fold in this skeleton (grasp/place
++            sampling on the folded bundle, not the flat garment)."""
++            if obj_name in folded_so_far:
++                from cutamp.fold_registry import FOLDABLE
++                s = FOLDABLE[obj_name]["folded_spheres"]
++                return s.to(world.tensor_args.device)
++            return world.get_collision_spheres(obj_name)
++
+         for idx, ground_op in enumerate(plan_skeleton):
+             op_name = ground_op.operator.name
+             params = ground_op.values
+@@ -94,7 +105,10 @@ class ParticleInitializer:
+                 log_debug(f"{header}. Deferred {q_end}")
+ 
+             # Pick
+-            elif op_name == Pick.name:
++            elif op_name == Pick.name or op_name == Fold.name:
++                # Fold initializes exactly like Pick: sample a reachable, collision-free
++                # grasp on the object AS IT CURRENTLY IS (flat garment for Fold; folded
++                # bundle for a Pick that follows a Fold).
+                 obj, grasp, q = params
+                 if not world.has_object(obj):
+                     raise ValueError(f"{obj=} not found in world")
+@@ -102,22 +116,25 @@ class ParticleInitializer:
+                     raise ValueError(f"{grasp=} shouldn't already be bound")
+                 if q in particles:
+                     raise ValueError(f"{q=} shouldn't already be bound")
++                _cache_key = (obj, obj in folded_so_far)
+ 
+                 # Note: pick cache currently assumes object is at same pose as when sampled
+-                if obj in self.pick_cache:
++                if _cache_key in self.pick_cache:
+                     # important, we need to clone here
+-                    particles[grasp] = self.pick_cache[obj]["sampled_grasps"].clone()
+-                    ik_result = self.pick_cache[obj]["ik_result"]
++                    particles[grasp] = self.pick_cache[_cache_key]["sampled_grasps"].clone()
++                    ik_result = self.pick_cache[_cache_key]["ik_result"]
+                     particles[q] = ik_result.solution[:, 0].clone()
+                     deferred_params.remove(q)
+                     log_debug(
+                         f"{header}. Using cached grasp poses for {obj}. {ik_result.success.sum()}/{num_particles} success"
+                     )
++                    if op_name == Fold.name:
++                        folded_so_far.add(obj)
+                     continue
+ 
+                 # Sample grasps
+                 obj_curobo = world.get_object(obj)
+-                obj_spheres = world.get_collision_spheres(obj)
++                obj_spheres = _spheres_for(obj)
+                 num_faces = 4 if isinstance(obj_curobo, Cuboid) else None
+ 
+                 # Sample 4 times as many grasps as particles
+@@ -155,7 +172,9 @@ class ParticleInitializer:
+ 
+                 # Store in cache
+                 if config.cache_subgraphs:
+-                    self.pick_cache[obj] = {"sampled_grasps": particles[grasp], "ik_result": ik_result}
++                    self.pick_cache[_cache_key] = {"sampled_grasps": particles[grasp], "ik_result": ik_result}
++                if op_name == Fold.name:
++                    folded_so_far.add(obj)
+ 
+             # Place
+             elif op_name == Place.name:
+@@ -191,7 +210,7 @@ class ParticleInitializer:
+ 
+                 # Sample placements pose of object (in world frame)
+                 obj_curobo = world.get_object(obj)
+-                obj_spheres = world.get_collision_spheres(obj)
++                obj_spheres = _spheres_for(obj)
+                 if config.random_init:
+                     yaw = sample_yaw(num_particles * 4, None, self.world.tensor_args.device)
+                     aabb = world.world_aabb.clone()
+diff --git a/cutamp/robots/utils.py b/cutamp/robots/utils.py
+index ef40712..6f4ad6c 100644
+--- a/cutamp/robots/utils.py
++++ b/cutamp/robots/utils.py
+@@ -7,6 +7,8 @@
+ # without an express license agreement from NVIDIA CORPORATION or
+ # its affiliates is strictly prohibited.
+ 
++from __future__ import annotations  # defer annotation eval (rerun 0.21 lacks Transform3D.columns; viz-only)
++
+ from typing import Union, Sequence, Dict
+ 
+ import numpy as np
+diff --git a/cutamp/rollout.py b/cutamp/rollout.py
+index 06755ad..035c186 100644
+--- a/cutamp/rollout.py
++++ b/cutamp/rollout.py
+@@ -14,7 +14,7 @@ from jaxtyping import Float
+ 
+ from cutamp.utils.common import Particles, action_6dof_to_mat4x4, action_4dof_to_mat4x4
+ from cutamp.config import TAMPConfiguration
+-from cutamp.tamp_domain import MoveFree, MoveHolding, Pick, Place, Push, PushStick, Conf
++from cutamp.tamp_domain import MoveFree, MoveHolding, Pick, Place, Push, PushStick, Fold, Conf
+ from cutamp.tamp_world import (
+     TAMPWorld,
+ )
+@@ -154,14 +154,43 @@ class RolloutFunction:
+                 action_to_ts[grasp_name] = ts
+                 action_to_pose_ts[grasp_name] = pose_ts
+ 
++            # Fold (real2sim2real): pinch a grasp on the FLAT garment and fold in place.
++            # Poses don't change, but the object's collision geometry swaps to the folded
++            # bundle from the NEXT pose timestep on — duplicate all poses at a new pose_ts
++            # so the swap boundary is a clean column (cost_function recomputes the boundary
++            # from the skeleton; no Rollout struct change needed).
++            elif op_name == Fold.name:
++                obj_name, grasp_name, _ = ground_op.values
++                obj_from_grasp = get_grasp_mat4x4(grasp_name)
++                world_from_obj = current_pose(obj_name)
++                world_from_grasp = world_from_obj @ obj_from_grasp
++
++                world_from_tool_desired.append(world_from_grasp)
++                gripper_close.append(True)  # pinch to fold
++                action_params.append(grasp_name)
++                action_to_ts[grasp_name] = ts
++                action_to_pose_ts[grasp_name] = pose_ts
++
++                for obj in self.world.movables:
++                    obj_to_pose[obj.name].append(current_pose(obj.name))
++                pose_ts += 1
++
+             # Place
+             elif op_name == Place.name:
+-                obj_name, grasp_name, place_name, _, _ = ground_op.values
++                obj_name, grasp_name, place_name, surface_name, _ = ground_op.values
+ 
+                 # Place is desired object pose in world frame
+                 place_4dof = particles[place_name]
+                 world_from_obj = action_4dof_to_mat4x4(place_4dof)
+ 
++                # TILT-AWARE: if this surface is a tilted plane, treat the 4-DOF placement as
++                # box-LOCAL and compose the box orientation, so the object rests flush on the
++                # tilted floor and the grasp/IK below is evaluated on the tilted pose.
++                from cutamp.tilt_registry import SURFACE_TILT
++                if surface_name in SURFACE_TILT:
++                    T4 = SURFACE_TILT[surface_name]["T4"].to(world_from_obj.device, world_from_obj.dtype)
++                    world_from_obj = T4 @ world_from_obj
++
+                 # Apply the grasp offset to get the tool frame pose
+                 obj_from_grasp = get_grasp_mat4x4(grasp_name)
+                 world_from_tool = world_from_obj @ obj_from_grasp
+diff --git a/cutamp/tamp_domain.py b/cutamp/tamp_domain.py
+index 77ad20a..fb2fdf5 100644
+--- a/cutamp/tamp_domain.py
++++ b/cutamp/tamp_domain.py
+@@ -48,6 +48,10 @@ ButtonPushed = Fluent("ButtonPushed", [Parameter("button", "button")])
+ PushedWithStick = Fluent("PushedWithStick", [Parameter("button", "button"), Parameter("obj", Movable)])
+ CanPush = Fluent("CanPush", [Parameter("button", "button")])
+ IsMovable = Fluent("IsMovable", [Parameter("obj", Movable)])
++# real2sim2real Fold extension: a garment starts FOLDABLE (flat, not pickable); the Fold
++# operator makes it Folded + Movable (collision geometry swaps to the measured bundle)
++IsFoldable = Fluent("IsFoldable", [Parameter("obj", Movable)])
++Folded = Fluent("Folded", [Parameter("obj", Movable)])
+ IsButton = Fluent("IsButton", [Parameter("button", Button)])
+ IsSurface = Fluent("IsSurface", [Parameter("surface", Surface)])
+ IsStick = Fluent("IsStick", [Parameter("obj", Movable)])
+@@ -65,6 +69,8 @@ all_tamp_fluents = [
+     PushedWithStick,
+     CanPush,
+     IsMovable,
++    IsFoldable,
++    Folded,
+     IsButton,
+     IsSurface,
+     IsStick,
+@@ -197,11 +203,38 @@ PushStick = TAMPOperator(
+     costs=[],
+ )
+ 
+-all_tamp_operators = [MoveFree, MoveHolding, Pick, Place, Push, PushStick]
++# real2sim2real: Fold a flat garment IN PLACE at its current pose. The robot must reach
++# a grasp on it (KinematicConstraint + CollisionFreeGrasp — so a garment with something
++# resting on it cannot be folded until the occluder is picked off: the uncover-first
++# precedence emerges geometrically, not by scripting). Effects: the garment becomes a
++# compact Movable bundle (collision spheres swap to the measured folded set, see
++# fold_registry + cost_function).
++Fold = TAMPOperator(
++    "Fold",
++    [obj, grasp, q],
++    preconditions=[
++        At(q),
++        HandEmpty(),
++        IsFoldable(obj),
++        JustMoved(),
++    ],
++    add_effects=[
++        Folded(obj),
++        IsMovable(obj),
++        HasNotPickedUp(obj),
++        CanMove(),
++    ],
++    del_effects=[IsFoldable(obj), JustMoved()],
++    constraints=[KinematicConstraint(q, grasp), CollisionFreeGrasp(obj, grasp)],
++    costs=[GraspCost(obj, grasp)],
++)
++
++all_tamp_operators = [MoveFree, MoveHolding, Pick, Place, Push, PushStick, Fold]
+ 
+ 
+ def get_initial_state(
+-    movables: Sequence[str] = (), surfaces: Sequence[str] = (), sticks: Sequence[str] = (), buttons: Sequence[str] = ()
++    movables: Sequence[str] = (), surfaces: Sequence[str] = (), sticks: Sequence[str] = (), buttons: Sequence[str] = (),
++    foldables: Sequence[str] = ()
+ ) -> State:
+     """Ground the initial state of the TAMP domain."""
+     initial_state = {At.ground("q0"), HandEmpty.ground(), CanMove.ground()}
+@@ -209,6 +242,11 @@ def get_initial_state(
+         initial_state.add(IsMovable.ground(movable))
+         initial_state.add(HasNotPickedUp.ground(movable))
+ 
++    for foldable in foldables:
++        # NOT IsMovable: a flat garment can only be Folded; Fold grants IsMovable +
++        # HasNotPickedUp so the standard Pick/Place then applies to the bundle
++        initial_state.add(IsFoldable.ground(foldable))
++
+     for surface in surfaces:
+         initial_state.add(IsSurface.ground(surface))
+ 
+diff --git a/cutamp/tamp_world.py b/cutamp/tamp_world.py
+index c6b2a7b..961dd6e 100644
+--- a/cutamp/tamp_world.py
++++ b/cutamp/tamp_world.py
+@@ -120,6 +120,7 @@ class TAMPWorld:
+             surfaces=self.get_objects_by_type("Surface", return_name=True),
+             sticks=self.get_objects_by_type("Stick", return_name=True),
+             buttons=self.get_objects_by_type("Button", return_name=True),
++            foldables=self.get_objects_by_type("Foldable", return_name=True),
+         )
+         return initial_state
+ 
+diff --git a/cutamp/tilt_registry.py b/cutamp/tilt_registry.py
+new file mode 100644
+index 0000000..700038f
+--- /dev/null
++++ b/cutamp/tilt_registry.py
+@@ -0,0 +1,24 @@
++# Tilt-aware placement registry (real2sim2real extension).
++#
++# Maps a placement SURFACE name -> a tilted support plane, so cuTAMP can plan placements
++# that rest FLUSH on a non-horizontal (e.g. reconstructed, tilted) container floor.
++#
++# For a registered surface:
++#   * the rollout composes T4 (box-local -> world) into the object's placement pose, so the
++#     object is placed at the box orientation and the grasp/IK reach is evaluated on the
++#     TILTED pose (reachability of the tilt is tested, not assumed);
++#   * the StablePlacement support/in-xy constraints transform object spheres into the
++#     box-local frame (R, origin) and test against the box-local footprint + floor.
++#
++# Each entry: surface_name -> {
++#   "T4":     torch (4,4) box-local -> world  (rotation R + origin t),
++#   "R":      torch (3,3) box axes as columns,
++#   "origin": torch (3,)  box-local origin (floor centre) in world,
++#   "bounds": (xmin, xmax, ymin, ymax) box-local footprint half-extents,
++#   "floor_z":float box-local floor height (object bottom target),
++# }
++SURFACE_TILT = {}
++
++
++def clear():
++    SURFACE_TILT.clear()

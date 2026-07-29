@@ -10,3 +10,5 @@ engines/
 
 # Newton GL viewer layout cache
 imgui.ini
+__pycache__/
+imgui.ini
