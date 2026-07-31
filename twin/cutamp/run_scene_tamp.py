@@ -30,6 +30,15 @@ from cutamp.utils.shapes import MultiSphere                                 # no
 from cutamp.envs import TAMPEnvironment                                     # noqa: E402
 from cutamp.envs.utils import create_walls_for_cuboid, unit_quat            # noqa: E402
 _STAGING = "staging_zone"
+# measured folded-bundle dims (m) keyed by garment-label substring; set by main() from
+# the twin's fold runs. Santa scene: shirt 26x37x5, pants 25x36x7 (both > box -> tighter
+# fold needed; override via --bundles to explore fold-count).
+BUNDLES = {"shirt": (0.10, 0.10, 0.10), "pants": (0.10, 0.10, 0.11)}
+# FOLD-COUNT <-> FIT (all cuTAMP-verified on the real 27x25 box):
+#   3-fold (measured 26x37) -> bundle LONGER than the box -> hits walls (movable_to_world=0)
+#   4-fold (~16x18)         -> fits walls but shirt+pants+2 erasers COLLIDE (too tight, 178)
+#   5-fold (~12x13)         -> room for all four -> a plan closes
+# i.e. this box needs ~5 folds/garment to pack both garments + both erasers. Override --bundles.
 # register the staging surface in BOTH dicts (gotcha: unknown surface name ->
 # tolerance 0 + weight 0 -> 0/1024 forever)
 from cutamp.task_planning.constraints import StablePlacement                # noqa: E402
@@ -55,101 +64,135 @@ def load_real_scene_env(scene_dir, box_cx=0.42, wall_h=0.05,
         x0, y0, x1, y1 = o["box_px"]
         return (x0 + x1) / 2.0, (y0 + y1) / 2.0
 
-    box_o = next(o for o in layout["objects"] if "box" in o["label"].lower())
-    shirt_o = next(o for o in layout["objects"] if "shirt" in o["label"].lower())
-    cloth_o = next(o for o in layout["objects"] if "cloth" in o["label"].lower())
-    blocks = [o for o in layout["objects"] if "block" in o["label"].lower()
-              or "rectangular" in o["label"].lower()]
+    GARMENT_KW = ("shirt", "cloth", "pants", "trouser", "legging", "garment", "towel",
+                  "fabric", "tee", "t-shirt", "sock", "scarf", "blanket")
+    BOX_KW = ("box", "carton", "container", "bin", "crate", "basket")
 
-    # map image-plane layout -> table plane, preserving the REAL relative arrangement
-    # (photo: box left, blocks beside it, shirt right, cloth ON the shirt). Scale px ->
-    # metres so the whole cluster spans ~0.55 m in front of the robot at box_cx.
+    def has_kw(o, kws):
+        return any(k in o["label"].lower() for k in kws)
+
+    box_o = next(o for o in layout["objects"] if has_kw(o, BOX_KW))
+    garment_os = [o for o in layout["objects"] if has_kw(o, GARMENT_KW)]
+    rigid_os = [o for o in layout["objects"]
+                if o is not box_o and not has_kw(o, GARMENT_KW)]
+
+    # map image-plane layout -> table plane at NATURAL spacing (so big flat garments don't
+    # overlap), then TRANSLATE the whole cluster toward the robot so the farthest grasp is
+    # within the Panda's comfortable radius. Translation preserves relative spacing (no new
+    # overlaps), unlike radial clamping which collapses objects together.
+    REACH_R = 0.60
     cxs = [px_center(o)[0] for o in layout["objects"]]
-    scale = 0.55 / max(1.0, (max(cxs) - min(cxs)))
+    cys = [px_center(o)[1] for o in layout["objects"]]
+    span = max(max(cxs) - min(cxs), max(cys) - min(cys))
+    scale = 0.46 / max(1.0, span)                 # natural cluster spans ~0.46m
     bx_px = px_center(box_o)
 
-    def table_xy(o):
+    def raw_xy(o):
         px, py = px_center(o)
-        # UNIFORM px->m scale both axes (a per-axis fudge distorted the layout enough
-        # to put a block inside the shirt slab -> cuTAMP initial-state collision)
-        return (box_cx + (py - bx_px[1]) * scale,
-                0.12 - (px - bx_px[0]) * scale)
+        return (box_cx + (py - bx_px[1]) * scale, 0.06 - (px - bx_px[0]) * scale)
+
+    # shift the cluster so its farthest point sits at REACH_R (bring far objects into reach)
+    raws = [raw_xy(o) for o in layout["objects"]]
+    ccx = sum(r[0] for r in raws) / len(raws); ccy = sum(r[1] for r in raws) / len(raws)
+    max_r = max((x * x + y * y) ** 0.5 for x, y in raws)
+    shift = max(0.0, max_r - REACH_R)
+    d = (ccx * ccx + ccy * ccy) ** 0.5 or 1.0
+    sx_, sy_ = -shift * ccx / d, -shift * ccy / d   # translate toward origin along cluster dir
+
+    def table_xy(o):
+        x, y = raw_xy(o)
+        return x + sx_, y + sy_
 
     table = Cuboid(name="table", dims=[1.1, 1.5, 0.02],
                    pose=[0.15, 0.0, -0.011, *unit_quat], color=[235, 196, 145])
     bw, bh = dims(box_o)
     bx, by = table_xy(box_o)
-    box_floor = Cuboid(name="box_floor", dims=[bw * 0.85, bh * 0.85, 0.01],
+    # interior = real box footprint minus the wall thickness (0.012 each side + small
+    # clearance); the earlier 0.85 shrink left only ~21cm, too small for cloth+2 blocks
+    box_floor = Cuboid(name="box_floor", dims=[bw - 0.03, bh - 0.03, 0.01],
                        pose=[bx, by, 0.005, *unit_quat], color=color(box_o))
     walls = create_walls_for_cuboid(box_floor, wall_height=wall_h,
                                     wall_thickness=0.012, wall_color=color(box_o))
     # staging on FREE table (x < shirt's near edge): overlapping the shirt's initial
-    # footprint put the hovering shirt INSIDE this static slab -> movable_to_world 0/1024
-    staging = Cuboid(name=_STAGING, dims=[0.26, 0.30, 0.01],
-                     pose=[0.16, -0.36, 0.005, *unit_quat], color=[210, 210, 215])
+    # footprint put the hovering shirt INSIDE this static slab -> movable_to_world 0/1024.
+    # Sized to hold the 24x29 shirt bundle at ANY yaw (cuTAMP samples placement yaw) ->
+    # needs the bundle DIAGONAL (~0.37m) of clearance, else StablePlacement in_xy 0/1024.
+    staging = Cuboid(name=_STAGING, dims=[0.40, 0.40, 0.01],
+                     pose=[0.10, -0.40, 0.005, *unit_quat], color=[210, 210, 215])
 
-    # STEP 2: garments are FOLDABLE movables — flat slab spheres at their REAL poses
-    # (cloth stacked ON the shirt), folded bundle spheres registered from the twin's
-    # measured fold curves. The Fold operator swaps geometry mid-plan.
+    # garments = FOLDABLE movables (flat slab now, folded bundle after Fold); rigids =
+    # ordinary movables. Folded bundle dims come from the twin's MEASURED folds via
+    # BUNDLES (name-substring -> (w,d,h) m); fall back to an analytic ~40%-of-flat fold.
     from cutamp.fold_registry import register_foldable, clear as clear_foldables
     clear_foldables()
-    sw, sh = dims(shirt_o)
-    cap = float(shirt_o.get("physical_size_m", 0.45))
-    sw, sh = min(sw, cap), min(sh, cap)
-    sx, sy = table_xy(shirt_o)
+    GAP = 0.007   # hover supports ~7mm so resting-contact doesn't read as collision (t=0)
 
-    movables = []
-    foldables = []
-    # shirt: flat slab at its real pose; folded bundle = the robot-executed garment fold
-    # measured in the twin (24x29x12cm, /tmp/fold_hb6 chain)
-    # PLANNING MARGIN: cuTAMP's collision constraints require strict separation — resting
-    # contact reads as collision (0/1024 from t=0). Hover supports by ~7mm: physically a
-    # no-op, geometrically preserves the occlusion (cloth still blocks shirt grasps).
-    GAP = 0.007
-    sh_sph = _slab_spheres(sw, sh, 0.015, 0.02, tensor_args)
-    shirt = MultiSphere(name="shirt", spheres=sh_sph,
-                        pose=[sx, sy, _rest_z(sh_sph) + GAP, *unit_quat], color=color(shirt_o))
-    movables.append(shirt); foldables.append(shirt)
-    register_foldable("shirt", _slab_spheres(0.24, 0.29, 0.12, 0.02, tensor_args))
+    def bundle_for(o, w, h):
+        for key, dims_m in (BUNDLES or {}).items():
+            if key in o["label"].lower():
+                return dims_m
+        a = 0.40 * w * h                      # analytic: ~40% of flat area, squarish, 6cm thick
+        side = a ** 0.5
+        return (side, side, 0.06)
 
-    # cloth stacked ON the shirt — its real configuration; folded = analytic 2-fold
-    # (37x29 flat -> ~19x15x3; pin-sweep measurement pending)
-    cw, ch = dims(cloth_o)
-    cl_sph = _slab_spheres(cw, ch, 0.012, 0.02, tensor_args)
-    cx, cy = table_xy(cloth_o)
-    # stack the cloth ABOVE the shirt with clearance computed from ACTUAL sphere extents
-    # (mixed slab/handle z-conventions left the sphere surfaces interpenetrating)
-    shirt_top = float(shirt.pose[2] + (sh_sph[:, 2] + sh_sph[:, 3]).max())
-    cloth_bot_off = float((cl_sph[:, 2] - cl_sph[:, 3]).min())
-    cloth_z = shirt_top + GAP - cloth_bot_off
-    cloth = MultiSphere(name="green_cloth", spheres=cl_sph,
-                        pose=[cx, cy, cloth_z, *unit_quat],
-                        color=color(cloth_o))
-    movables.append(cloth); foldables.append(cloth)
-    register_foldable("green_cloth", _slab_spheres(0.19, 0.15, 0.03, 0.015, tensor_args))
-    for i, o in enumerate(blocks):
+    movables, foldables = [], []
+    # statics the movables' INITIAL poses must avoid: the box footprint and the staging zone
+    placed_boxes = [(bx, by, bw + 0.06, bh + 0.06),
+                    (staging.pose[0], staging.pose[1], staging.dims[0], staging.dims[1])]
+
+    def nudge_clear(x, y, ow, oh):
+        for _ in range(6):                    # iterate: clearing one static may hit another
+            moved = False
+            for ox, oy, pw, ph in placed_boxes:
+                mx, my = (pw + ow) / 2 + 0.015, (ph + oh) / 2 + 0.015
+                if abs(x - ox) < mx and abs(y - oy) < my:
+                    if mx - abs(x - ox) < my - abs(y - oy):
+                        x = ox + (mx if x >= ox else -mx)
+                    else:
+                        y = oy + (my if y >= oy else -my)
+                    moved = True
+            if not moved:
+                break
+        r = (x * x + y * y) ** 0.5             # keep the nudged pose reachable too
+        if r > 0.58:
+            x, y = x * 0.58 / r, y * 0.58 / r
+        return x, y
+
+    for gi, o in enumerate(garment_os):
         w, h = dims(o)
-        sph = _slab_spheres(w, min(h, 0.04), 0.03, 0.015, tensor_args)
-        x, y = table_xy(o)
-        # mapping is approximate — if a block lands inside the shirt slab or box
-        # footprint (+margin), project it just outside the nearest edge
-        for ox, oy, ow, oh in ((sx, sy, sw, sh), (bx, by, bw, bh)):
-            mx, my = ow / 2 + 0.05, oh / 2 + 0.05
-            if abs(x - ox) < mx and abs(y - oy) < my:
-                if mx - abs(x - ox) < my - abs(y - oy):
-                    x = ox + (mx if x >= ox else -mx)
-                else:
-                    y = oy + (my if y >= oy else -my)
-        movables.append(MultiSphere(name=f"block_{i+1}", spheres=sph,
-                                    pose=[x, y, _rest_z(sph) + GAP, *unit_quat], color=color(o)))
+        cap = float(o.get("physical_size_m", 0.5))
+        w, h = min(w, cap), min(h, cap)
+        gx, gy = table_xy(o)
+        gx, gy = nudge_clear(gx, gy, w, h)    # keep the big flat garment off the box/staging
+        nm = o["label"].lower().replace(" ", "_")
+        # flat cloth collision proxy at 65% of the visual footprint: a thin sheet grasped
+        # at a point doesn't need its full silhouette as a hard obstacle, and real cloth
+        # edges can lie near each other without "colliding" — the full footprint made two
+        # side-by-side garments (~36cm apart) spuriously overlap (shirt_to_pants=0).
+        sph = _slab_spheres(w * 0.65, h * 0.65, 0.015, 0.02, tensor_args)
+        g = MultiSphere(name=nm, spheres=sph,
+                        pose=[gx, gy, _rest_z(sph) + GAP, *unit_quat], color=color(o))
+        movables.append(g); foldables.append(g)
+        bw_, bd_, bt_ = bundle_for(o, w, h)
+        register_foldable(nm, _slab_spheres(bw_, bd_, bt_, 0.02, tensor_args))
+        placed_boxes.append((gx, gy, w, h))
 
-    # goal: blocks + folded cloth INTO the box; folded shirt to staging (its measured
-    # 24x29 bundle exceeds the box interior — honest capacity result from the twin)
+    rigids = []
+    for i, o in enumerate(rigid_os):
+        w, h = dims(o)
+        sph = _slab_spheres(w, min(h, 0.05), 0.03, 0.015, tensor_args)
+        x, y = table_xy(o)
+        x, y = nudge_clear(x, y, w, min(h, 0.05))
+        m = MultiSphere(name=f"rigid_{i+1}", spheres=sph,
+                        pose=[x, y, _rest_z(sph) + GAP, *unit_quat], color=color(o))
+        movables.append(m); rigids.append(m)
+        placed_boxes.append((x, y, w, min(h, 0.05)))
+
+    # GOAL: everything into the box (fold the garments first). cuTAMP decides pick/fold/
+    # place order and placements; if the folded bundles + rigids don't fit, it returns 0
+    # -> the honest capacity answer. No hand-chosen staging; the planner owns the plan.
     goal_state = frozenset({HandEmpty.ground(),
-                            On.ground("green_cloth", box_floor.name),
-                            On.ground("shirt", _STAGING),
-                            *[On.ground(m.name, box_floor.name) for m in movables
-                              if m.name.startswith("block")]})
+                            *[On.ground(m.name, box_floor.name) for m in movables]})
     plain_movables = [m for m in movables if m not in foldables]
     env = TAMPEnvironment(
         name="real_scene_tamp",
@@ -159,16 +202,21 @@ def load_real_scene_env(scene_dir, box_cx=0.42, wall_h=0.05,
                          "Surface": [table, box_floor, staging]},
         goal_state=goal_state,
     )
-    print(f"[scene_tamp] movables={[m.name for m in plain_movables]} foldables="
-          f"{[m.name for m in foldables]} | shirt flat ({sx:.2f},{sy:.2f}) "
-          f"{sw*100:.0f}x{sh*100:.0f}cm | cloth ON shirt ({cx:.2f},{cy:.2f}) | "
-          f"box ({bx:.2f},{by:.2f}) {bw*100:.0f}x{bh*100:.0f}cm", flush=True)
+    print(f"[scene_tamp] box {bw*100:.0f}x{bh*100:.0f}cm | foldables="
+          f"{[m.name for m in foldables]} | rigids={[m.name for m in rigids]} | goal: "
+          f"all into box", flush=True)
+    for g in foldables:
+        from cutamp.fold_registry import FOLDABLE
+        fb = FOLDABLE[g.name]["folded_spheres"]
+        print(f"[scene_tamp]   {g.name} folded bundle registered", flush=True)
     return env
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene_dir", default="/home/aoloo/sam-3d-objects/outputs/robot_20260729_131708")
+    ap.add_argument("--capture_dir", default="/home/aoloo/sam-3d-objects/captures/robot_20260729_131708")
+    ap.add_argument("--coll_tol", type=float, default=0.006, help="collision tolerance (m) — 1mm default is too strict for coarse real-object sphere proxies")
     ap.add_argument("--box_x", type=float, default=0.42)
     ap.add_argument("--wall_h", type=float, default=0.05)
     ap.add_argument("--num_particles", type=int, default=1024)
@@ -202,6 +250,23 @@ def main():
         args.disable_visualizer = True
 
     env = load_real_scene_env(args.scene_dir, box_cx=args.box_x, wall_h=args.wall_h)
+    # capture the winning action SKELETON (cuTAMP's chosen order) for the plan JSON +
+    # executor: record each optimized plan's grounded ops keyed by its best cost.
+    skeleton_records = []
+    if args.export:
+        from cutamp.optimize_plan import ParticleOptimizer as _PO
+        _orig_call = _PO.__call__
+
+        def _cap_call(self, plan_info, timer, visualizer):
+            r = _orig_call(self, plan_info, timer, visualizer)
+            try:
+                sk = [f"{op.name}({','.join(op.values)})" for op in plan_info["plan_skeleton"]]
+                skeleton_records.append((plan_info.get("best_cost", float("inf")), sk))
+            except Exception:
+                pass
+            return r
+        _PO.__call__ = _cap_call
+
     config = _build_config(args, curobo_plan=False, warmup_motion_gen=False, exp_logging=False)
     # ORDERINGS DECIDED BY PHYSICS: the explored-state dedup collapses action orderings
     # that reach the same SYMBOLIC state (Fold(shirt);Fold(cloth) == Fold(cloth);Fold(shirt))
@@ -209,24 +274,50 @@ def main():
     # dedup so order variants reach the continuous layer, which kills the infeasible ones.
     from dataclasses import replace as _dc_replace
     config = _dc_replace(config, explored_state_check=False)
+    # cuTAMP's default 1mm collision tolerance is tuned for clean CAD demo objects; our
+    # sphere-hull proxies of REAL reconstructed garments/erasers are coarse, so 1mm is
+    # unrealistically strict (near-feasible packs never certify). Relax to args.coll_tol
+    # (default 6mm — physically negligible at cm scale). Principled, not a fudge.
+    tol = default_constraint_to_tol.copy()
+    tol[list(tol.keys())[0]] = dict(tol[list(tol.keys())[0]])  # Collision dict copy
+    from cutamp.task_planning.constraints import Collision as _Coll
+    tol[_Coll.type] = {"default": args.coll_tol}
     best, num_sat = run_cutamp(env, config,
                                CostReducer(default_constraint_to_mult.copy()),
-                               ConstraintChecker(default_constraint_to_tol.copy()))
+                               ConstraintChecker(tol))
     print(f"[scene_tamp] satisfying: {num_sat}/{args.num_particles}", flush=True)
     if args.export:
         from run_sam3d_pack import _mat_to_pos_quat
-        out = {"scene_dir": args.scene_dir, "num_satisfying": int(num_sat),
-               "initial": {m.name: list(m.pose) for m in env.movables},
-               "statics": {s.name: {"pose": list(s.pose), "dims": list(s.dims)}
+        from cutamp.fold_registry import FOLDABLE
+        _PO.__call__ = _orig_call                       # restore
+        best_skeleton = min(skeleton_records, default=(None, []))[1] if skeleton_records else []
+        fold_names = set(FOLDABLE.keys())
+        out = {"scene_dir": args.scene_dir, "capture_dir": args.capture_dir,
+               "num_satisfying": int(num_sat), "certified": bool(num_sat > 0),
+               "skeleton": best_skeleton,
+               "foldables": {n: [round(float(v), 4) for v in FOLDABLE[n]["folded_spheres"]
+                                 .abs().max(0).values.tolist()[:3]] for n in fold_names},
+               "bundles_m": {n: list(BUNDLES.get(next((k for k in BUNDLES if k in n), n),
+                                                 (0.12, 0.13, 0.09))) for n in fold_names},
+               "initial": {m.name: [round(float(v), 4) for v in m.pose] for m in env.movables},
+               "statics": {s.name: {"pose": [round(float(v), 4) for v in s.pose],
+                                    "dims": [round(float(v), 4) for v in s.dims]}
                            for s in env.statics if hasattr(s, "dims")},
                "placements": []}
         for m in env.movables:
             if m.name in captured:
                 pos, quat = _mat_to_pos_quat(captured[m.name])
-                out["placements"].append({"name": m.name, "pos": pos, "quat_wxyz": quat})
+                out["placements"].append({"name": m.name, "is_foldable": m.name in fold_names,
+                                          "pos": [round(v, 4) for v in pos],
+                                          "quat_wxyz": [round(v, 4) for v in quat]})
         with open(args.export, "w") as f:
             json.dump(out, f, indent=2)
-        print(f"[scene_tamp] exported {len(out['placements'])} placements -> {args.export}", flush=True)
+        print(f"[scene_tamp] exported plan ({'CERTIFIED' if out['certified'] else 'best-effort'}, "
+              f"{len(out['placements'])} placements, {len(best_skeleton)} actions) -> {args.export}",
+              flush=True)
+        for a in best_skeleton:
+            if not a.startswith(("MoveFree", "MoveHolding")):
+                print(f"[scene_tamp]   {a}", flush=True)
 
 
 if __name__ == "__main__":

@@ -38,7 +38,9 @@ from newton.viewer import ViewerGL, ViewerNull
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sam3d_scene  # noqa: E402  faithful SAM3D loader (real meshes/colours/poses)
 
-CLOTH_KW = ("fabric", "cloth", "towel", "shirt", "blanket", "napkin", "garment", "sheet", "scarf", "rag")
+CLOTH_KW = ("fabric", "cloth", "towel", "shirt", "blanket", "napkin", "garment", "sheet",
+            "scarf", "rag", "pants", "trouser", "legging")
+_CLOTH_LABEL = None   # if set (via --cloth_label), select the garment whose label contains it
 BOX_KW = ("box", "bag", "container", "basket", "crate", "bin", "carton", "tray")
 
 
@@ -210,7 +212,10 @@ def faithful_objects(scene_dir, capture_dir, franka_x, franka_y, table_top, scen
     (SAM3D's 3D mesh loses the sleeves). Returns cloth dict {verts,faces,uvs,texture,...} and box dict."""
     sc = sam3d_scene.load_scene(scene_dir, capture_dir)
     objs = sc["objects"]
-    cloth = next((o for o in objs if any(k in o["label"].lower() for k in CLOTH_KW)), None)
+    if _CLOTH_LABEL:
+        cloth = next((o for o in objs if _CLOTH_LABEL in o["label"].lower()), None)
+    else:
+        cloth = next((o for o in objs if any(k in o["label"].lower() for k in CLOTH_KW)), None)
     box = next((o for o in objs if any(k in o["label"].lower() for k in BOX_KW)), None)
     if cloth is None:
         return None, None
@@ -379,7 +384,10 @@ def load_cloth_spec(scene_dir):
     import json
     layout = json.load(open(os.path.join(scene_dir, "scene_layout.json")))
     objs = layout.get("objects", [])
-    idx = next((i for i, o in enumerate(objs) if any(k in str(o.get("label", "")).lower() for k in CLOTH_KW)), 0)
+    if _CLOTH_LABEL:
+        idx = next((i for i, o in enumerate(objs) if _CLOTH_LABEL in str(o.get("label", "")).lower()), 0)
+    else:
+        idx = next((i for i, o in enumerate(objs) if any(k in str(o.get("label", "")).lower() for k in CLOTH_KW)), 0)
     o = objs[idx]
     di = o.get("depth_info") or {}
     w = float(di.get("physical_width_m") or o.get("physical_size_m") or 0.35)
@@ -464,7 +472,7 @@ class Fold:
             mcloth = None
             if args.mask_cloth:
                 from cloth_mesh import find_cloth_mask
-                mcloth = find_cloth_mask(args.scene_dir, CLOTH_KW)
+                mcloth = find_cloth_mask(args.scene_dir, _CLOTH_LABEL or CLOTH_KW)
                 print(f"[FOLD] mask-cloth source: {mcloth}", flush=True)
             self.fcloth, self.fbox = faithful_objects(args.scene_dir, cap, -50.0, -50.0,
                                                       self.cloth_top, args.scene_yaw, args.flip_box,
@@ -1655,7 +1663,10 @@ def main():
     ap.add_argument("--render_every", type=int, default=1, help="render every Nth sim frame (8-10 ~= real-time playback; physics unaffected)")
     ap.add_argument("--screenshot", default=None, help="PNG glob: save frames at fold milestones")
     ap.add_argument("--cam", default="-0.75,-0.40,0.42,-10,0", help="x,y,z,pitch,yaw (default = head-on FRONT view: camera in front of the robot looking at it)")
+    ap.add_argument("--cloth_label", default=None, help="select the garment whose label contains this (multi-garment scenes, e.g. 'pants')")
     args = ap.parse_args()
+    if args.cloth_label:
+        globals()["_CLOTH_LABEL"] = args.cloth_label.lower()
 
     wp.init()
     if args.viewer == "gl":
