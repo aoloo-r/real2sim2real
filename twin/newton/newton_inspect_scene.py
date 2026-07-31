@@ -90,7 +90,7 @@ def main():
     cx = float(np.mean([o["x"] for o in objs])); cy = float(np.mean([o["y"] for o in objs]))
     if args.viewer == "gl":
         viewer = ViewerGL(); viewer.set_model(model)
-        viewer.set_camera(wp.vec3(cx - 0.45, cy - 0.62, 0.5), -32, 58)
+        viewer.set_camera(wp.vec3(cx - 0.28, cy - 0.40, 0.34), -30, 55)
     else:
         viewer = ViewerNull(num_frames=10**9); viewer.set_model(model)
 

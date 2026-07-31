@@ -47,7 +47,61 @@ def _quat2mat(q):
     ], np.float64)
 
 
-def load_scene(scene_dir, capture_dir):
+def _rodrigues(axis, ang):
+    n = np.linalg.norm(axis)
+    if n < 1e-12:
+        return np.eye(3)
+    a = axis / n
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)
+
+
+def _refine_tabletop_pose(verts, uvs, T_cam_base, intr, img):
+    """Correct a single object's reconstructed rotation using tabletop priors:
+      (1) GRAVITY: rotate about the centroid so the object's dominant vertical axis aligns with
+          world +z (it rests flat on the table) -> removes the single-view tilt error.
+      (2) IMAGE YAW: search the in-plane yaw whose camera reprojection best matches the object's
+          original pixels (from uvs) -> removes the yaw error, staying consistent with the photo.
+    Rotations are about the centroid so position is preserved; per-vertex uvs/colours ride along."""
+    v = verts.astype(np.float64)
+    c = v.mean(0)
+    V = v - c
+
+    # (1) gravity un-tilt: dominant vertical axis (principal axis most aligned with +z) -> +z
+    evals, evecs = np.linalg.eigh(V.T @ V)
+    up = evecs[:, int(np.argmax(np.abs(evecs[2, :])))]
+    if up[2] < 0:
+        up = -up
+    z = np.array([0.0, 0.0, 1.0])
+    ax = np.cross(up, z)
+    ang = np.arccos(np.clip(up @ z, -1.0, 1.0))
+    V = V @ _rodrigues(ax, ang).T
+
+    # (2) image-yaw: pick yaw (about +z) minimising reprojection error to the original pixels
+    fx, fy, cx, cy = intr
+    W, H = img
+    orig_px = np.stack([uvs[:, 0] * W, uvs[:, 1] * H], 1).astype(np.float64)  # original projected pixels
+
+    def reproj_err(theta):
+        ct, st = np.cos(theta), np.sin(theta)
+        Rz = np.array([[ct, -st, 0.0], [st, ct, 0.0], [0.0, 0.0, 1.0]])
+        vw = (V @ Rz.T) + c                                   # base frame (m)
+        cam = (T_cam_base @ np.c_[vw, np.ones(len(vw))].T).T[:, :3]
+        Z = np.clip(cam[:, 2], 1e-4, None)
+        pu = fx * cam[:, 0] / Z + cx
+        pv = fy * cam[:, 1] / Z + cy
+        return np.mean((pu - orig_px[:, 0]) ** 2 + (pv - orig_px[:, 1]) ** 2)
+
+    thetas = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+    best = min(thetas, key=reproj_err)
+    for _ in range(3):                                        # local refine
+        best = min(np.linspace(best - 0.09, best + 0.09, 19), key=reproj_err)
+    ct, st = np.cos(best), np.sin(best)
+    V = V @ np.array([[ct, -st, 0.0], [st, ct, 0.0], [0.0, 0.0, 1.0]]).T
+    return (V + c).astype(np.float32)
+
+
+def load_scene(scene_dir, capture_dir, refine=True):
     layout = json.load(open(os.path.join(scene_dir, "scene_layout.json")))
     img = layout.get("image_size_px", [640, 480])
     intr = json.load(open(os.path.join(capture_dir, "intrinsics.json")))
@@ -98,6 +152,17 @@ def load_scene(scene_dir, capture_dir):
             "uvs": uvs, "rgb": rgb_path, "color": tuple(float(c) for c in col[:3]),
             "measured_m": meas, "vcolors": vcol,
         })
+    # POSE REFINEMENT: single-view SAM3D reliably recovers each object's mesh, colour and
+    # rough position, but its per-object ROTATION (icp_pose) is unreliable -> objects come out
+    # tilted / yaw-wrong. Correct it from robust tabletop priors (general, not per-object hacks):
+    #   (1) gravity: the object rests flat on the table -> align its dominant vertical axis to +z
+    #   (2) image yaw: pick the in-plane yaw whose reprojection best matches the object's pixels
+    if refine:
+        T_cam_base = np.linalg.inv(T_base_cam)
+        for o in objs:
+            o["verts"] = _refine_tabletop_pose(
+                o["verts"], o["uvs"], T_cam_base, (fx, fy, cx, cy), img)
+
     # tabletop scene: everything rests on one table plane -> snap each object's base to it
     # (removes reconstruction z-noise that leaves objects floating)
     table_z = min(o["verts"][:, 2].min() for o in objs)
