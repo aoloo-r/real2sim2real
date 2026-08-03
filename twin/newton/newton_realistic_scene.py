@@ -61,6 +61,9 @@ def main():
 
     garments = []   # (label, verts_m[N,3], faces, uvs, texture)
     rgb_path = os.path.join(args.capture_dir, "rgb.png")
+    # measured physical size per object id (ground truth for scale — the raw SAM3D mesh is
+    # often oversized, esp. small dark objects)
+    meas = {o["id"]: float(o.get("physical_size_m") or 0.1) for o in layout["objects"]}
 
     for o in objs:
         label = o["label"]
@@ -71,18 +74,35 @@ def main():
             v_cm, faces, uvs, tex = cloth_from_mask(mpath, args.capture_dir,
                                                     step=args.step, base_frame=args.base_frame)
             v_m = v_cm * VIZ
-            v_m[:, 2] -= v_m[:, 2].min()                    # rest on the floor plane
+            # PROPER PLACEMENT: keep the object at its real (x,y), but re-centre xy on the
+            # loader's position (cloth_from_mask returns absolute base-frame verts that can
+            # drift), cap size to the depth-measured extent, and rest flat on the table.
+            ext = max(np.ptp(v_m[:,0]), np.ptp(v_m[:,1]))
+            if ext > meas.get(oid, 0.5) * 1.1:              # cap to ~measured size (clear gaps)
+                s = meas[oid] * 1.05 / ext
+                v_m[:, :2] *= s
+            v_m[:, 0] += o["x"] - v_m[:, 0].mean()
+            v_m[:, 1] += o["y"] - v_m[:, 1].mean()
+            v_m[:, 2] -= v_m[:, 2].min()                    # rest on the floor plane (z=0)
             garments.append((label, v_m, faces.reshape(-1), uvs, tex))
-            print(f"[real] garment '{label}': {len(v_m)} verts from mask (real shape+texture)", flush=True)
+            print(f"[real] garment '{label}' @({o['x']:.2f},{o['y']:.2f}) size~{ext*100:.0f}cm "
+                  f"(measured {meas.get(oid,0)*100:.0f}cm)", flush=True)
         else:
             if not o.get("mesh_path") or not os.path.exists(o["mesh_path"]):
                 print(f"[real] skip '{label}' (no mesh)", flush=True)
                 continue
             mesh, _ = load_obj_mesh(o["mesh_path"])
+            # SCALE the raw mesh to its measured size (fixes SAM3D's oversized eraser blobs)
+            mv = np.asarray(mesh.vertices)
+            ext = float(max(np.ptp(mv[:,0]), np.ptp(mv[:,1]), np.ptp(mv[:,2])))
+            scale = meas.get(oid, ext) / ext if ext > 1e-6 else 1.0
+            scale = min(scale, 1.0) if is_garment(label) else scale   # only shrink rigids up-capped
             builder.add_shape_mesh(-1, xform=wp.transform(
-                wp.vec3(o["x"], o["y"], o["base_z"] + 0.002), wp.quat_identity()),
-                mesh=mesh, cfg=cfg, color=wp.vec3(*o["color"]), label=label)
-            print(f"[real] rigid '{label}': reconstructed mesh", flush=True)
+                wp.vec3(o["x"], o["y"], 0.002), wp.quat_identity()),   # GROUNDED at z=0 (no float)
+                mesh=mesh, cfg=cfg, color=wp.vec3(*o["color"]), label=label,
+                scale=wp.vec3(scale, scale, scale))
+            print(f"[real] rigid '{label}' @({o['x']:.2f},{o['y']:.2f}) scaled x{scale:.2f} "
+                  f"-> {meas.get(oid,0)*100:.0f}cm, grounded", flush=True)
 
     builder.add_ground_plane(cfg=cfg)
     model = builder.finalize()
