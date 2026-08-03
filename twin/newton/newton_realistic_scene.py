@@ -74,15 +74,15 @@ def main():
             v_cm, faces, uvs, tex = cloth_from_mask(mpath, args.capture_dir,
                                                     step=args.step, base_frame=args.base_frame)
             v_m = v_cm * VIZ
-            # PROPER PLACEMENT: keep the object at its real (x,y), but re-centre xy on the
-            # loader's position (cloth_from_mask returns absolute base-frame verts that can
-            # drift), cap size to the depth-measured extent, and rest flat on the table.
+            # MOST RGBD-FAITHFUL: cloth_from_mask back-projects the real mask pixels through
+            # the real depth + extrinsics, so the verts are ALREADY at the true base-frame
+            # position AND real size. Keep them exactly there (re-centring onto SAM3D's
+            # position_cam estimate drifts each garment ~2cm off); only ground z. Optionally
+            # shrink about the CENTROID (position-preserving) if depth grossly over-inflated.
             ext = max(np.ptp(v_m[:,0]), np.ptp(v_m[:,1]))
-            if ext > meas.get(oid, 0.5) * 1.1:              # cap to ~measured size (clear gaps)
-                s = meas[oid] * 1.05 / ext
-                v_m[:, :2] *= s
-            v_m[:, 0] += o["x"] - v_m[:, 0].mean()
-            v_m[:, 1] += o["y"] - v_m[:, 1].mean()
+            if ext > meas.get(oid, 0.5) * 1.6:              # only if depth badly over-inflated
+                c = v_m[:, :2].mean(0)
+                v_m[:, :2] = c + (v_m[:, :2] - c) * (meas[oid] * 1.4 / ext)
             v_m[:, 2] -= v_m[:, 2].min()                    # rest on the floor plane (z=0)
             garments.append((label, v_m, faces.reshape(-1), uvs, tex))
             print(f"[real] garment '{label}' @({o['x']:.2f},{o['y']:.2f}) size~{ext*100:.0f}cm "
