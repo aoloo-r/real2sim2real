@@ -32,6 +32,7 @@ from newton._src.utils.texture import load_texture
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cloth_mesh import cloth_from_mask, find_cloth_mask  # noqa: E402
 import sam3d_scene  # noqa: E402
+from newton_twin_hydro import load_scene_objects  # noqa: E402
 
 GARMENT_KW = ("shirt", "cloth", "pants", "trouser", "legging", "garment", "towel", "fabric", "tee")
 M2CM = 100.0
@@ -84,9 +85,17 @@ def main():
     scene.add_shape_mesh(-1, wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
                          mesh=box_mesh, cfg=cfg, color=wp.vec3(*bcol))
 
+    # ONE FRAME for all objects: the real reconstructed base frame (cloths back-project into
+    # it; rigids must too, else they land in the cuTAMP compact frame and drift off). Map each
+    # plan movable to its real reconstructed object (rigids by nearest non-garment).
+    real = load_scene_objects(args.scene_dir, args.capture_dir, args.base_frame)
+    real_rigids = [r for r in real if not any(k in r["label"].lower() for k in GARMENT_KW)
+                   and "box" not in r["label"].lower()]
+
     # --- garments as VBD cloth; erasers as rigid free bodies ---
     cloth_info, rigids = {}, {}
     part0 = 0
+    ri = 0
     for nm, pose in initial.items():
         o = meta.get(nm, {})
         col = o.get("display_color", [0.6, 0.6, 0.65])
@@ -107,10 +116,21 @@ def main():
             part0 += n
             print(f"[phys] cloth '{nm}': {n} particles @({p_cm[0]:.0f},{p_cm[1]:.0f})cm", flush=True)
         else:
-            b = scene.add_body(xform=wp.transform(wp.vec3(p_cm[0], p_cm[1], 3.0), wp.quat_identity()), label=nm)
-            scene.add_shape_box(b, hx=4.5, hy=2.5, hz=1.5, cfg=cfg, color=wp.vec3(*col))
+            # place at the REAL reconstructed position (same frame as the cloths), NOT the
+            # plan's cuTAMP compact-frame position — otherwise erasers drift off next to the
+            # cloths and vanish from view. cuTAMP placements are applied later at pack time.
+            rr = real_rigids[ri] if ri < len(real_rigids) else None
+            ri += 1
+            rx, ry = (rr["x"] * M2CM, rr["y"] * M2CM) if rr else (p_cm[0], p_cm[1])
+            rcol = rr["color"] if rr else col
+            b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, 1.5), wp.quat_identity()), label=nm)
+            # real erasers are black; brighten for VISIBILITY against the dark floor (they're
+            # tiny 9cm boxes that vanish black-on-dark). Real colour kept in the plan/data.
+            vis_col = (1.0, 0.0, 0.0) if os.environ.get("ERASER_DEBUG") else tuple(max(c, 0.35) for c in rcol)
+            _hx, _hy, _hz = (8.0, 8.0, 8.0) if os.environ.get("ERASER_DEBUG") else (4.5, 2.5, 1.5)
+            scene.add_shape_box(b, hx=_hx, hy=_hy, hz=_hz, cfg=cfg, color=wp.vec3(*vis_col))
             rigids[nm] = b
-            print(f"[phys] rigid '{nm}' @({p_cm[0]:.0f},{p_cm[1]:.0f})cm", flush=True)
+            print(f"[phys] rigid '{nm}' @({rx:.0f},{ry:.0f})cm (real frame)", flush=True)
 
     scene.add_ground_plane(cfg=cfg)
     scene.color(include_bending=True)                  # VBD graph colouring (before finalize)
@@ -125,13 +145,29 @@ def main():
                              particle_vertex_contact_buffer_size=64,
                              particle_edge_contact_buffer_size=64)
     st = [model.state(), model.state()]
+    # populate free-body (eraser) poses from their joint coords — without this they sit at
+    # the origin (off-camera) because only the cloth solver steps, never a rigid FK.
+    newton.eval_fk(model, model.joint_q, model.joint_qd, st[0])
+    newton.eval_fk(model, model.joint_q, model.joint_qd, st[1])
+    _bq = st[0].body_q.numpy()
+    for nm, bid in rigids.items():
+        print(f"[phys] DIAG rigid '{nm}' body_q pos = {_bq[bid, :3].round(1)} cm", flush=True)
+    # SolverVBD.step only writes particle_q into its OUTPUT state; it does NOT carry body_q
+    # forward. After the first ping-pong swap the render state's free-body poses are stale/zero
+    # and the erasers vanish. Keep a clean copy and re-stamp it into the render state each frame
+    # (the erasers are static in checkpoint 1 — no robot pushing them yet).
+    bq0 = wp.clone(st[0].body_q) if model.body_count else None
     contacts = model.collide(st[0])
 
-    VIZ = 0.01
+    # everything is in CM (model units); render at CM so cloth (log_mesh) and box+rigids
+    # (log_state) share one scale. Camera positioned in CM.
     if args.viewer == "gl":
         viewer = ViewerGL(); viewer.set_model(model)
-        cx = float(np.mean([np.array(p[:2]).mean() for p in initial.values()]))
-        viewer.set_camera(wp.vec3(0.30, -0.55, 0.55), -38, 70)
+        # aim at the REAL cluster (all objects share the real frame now): cloth particles + erasers
+        pts = [st[0].particle_q.numpy()[:, :2]] + [_bq[b, :2][None] for b in rigids.values()]
+        allxy = np.concatenate(pts, 0)
+        cx, cy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
+        viewer.set_camera(wp.vec3(cx - 40.0, cy - 75.0, 60.0), -38, 60)
     else:
         viewer = ViewerNull(num_frames=10**9); viewer.set_model(model)
 
@@ -139,7 +175,9 @@ def main():
 
     def render(t):
         viewer.begin_frame(t)
-        pq = st[0].particle_q.numpy() * VIZ            # cm -> m for display
+        if bq0 is not None:
+            st[0].body_q.assign(bq0)                    # re-stamp eraser poses (VBD drops body_q)
+        pq = st[0].particle_q.numpy()                  # CM — same scale as log_state
         for nm, ci in cloth_info.items():
             v = pq[ci["p0"]:ci["p0"] + ci["n"]]
             viewer.log_mesh(f"g_{nm}", wp.array(v.astype(np.float32), dtype=wp.vec3),
