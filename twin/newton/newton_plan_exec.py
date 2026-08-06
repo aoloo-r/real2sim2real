@@ -61,6 +61,13 @@ def norm_label(s):
     return str(s).lower().replace(" ", "_")
 
 
+def _qrot(qq, v):
+    """Rotate vector v by quaternion qq=(x,y,z,w)."""
+    x, y, z, w = qq
+    t = 2.0 * np.cross([x, y, z], v)
+    return np.asarray(v) + w * t + np.cross([x, y, z], t)
+
+
 def load_box_mesh_cm(scene_dir, capture_dir):
     """Real reconstructed box mesh in cm, base sitting on the table top (z=TABLE_TOP)."""
     sc = sam3d_scene.load_scene(scene_dir, capture_dir)
@@ -127,6 +134,7 @@ class PlanExec:
         self.plan = plan
         self.initial = plan["initial"]
         self.actions = parse_skeleton(plan["skeleton"])
+        self.placements = {norm_label(p["name"]): p for p in plan.get("placements", [])}
         self.capture_dir = args.capture_dir
 
         gspecs = garment_specs(args.scene_dir)
@@ -215,7 +223,9 @@ class PlanExec:
 
         # --- erasers as rigid free bodies ---
         real_rigids = [r for r in real if not is_garment(r["label"]) and "box" not in r["label"].lower()]
-        self.rigids = {}
+        self.rigids = {}          # label -> body id
+        self.rigid_xy = {}        # label -> (x,y) real cm
+        self.rigid_hz = 1.5
         ri = 0
         for nm, pose in self.initial.items():
             if is_garment(nm):
@@ -224,11 +234,13 @@ class PlanExec:
             ri += 1
             rx, ry = (rr["x"] * M2CM, rr["y"] * M2CM) if rr else (np.array(pose[:2]) * M2CM)
             rcol = rr["color"] if rr else [0.2, 0.2, 0.2]
-            b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, TABLE_TOP + 1.5), wp.quat_identity()), label=nm)
-            scene.add_shape_box(b, hx=4.5, hy=2.5, hz=1.5, cfg=cfg,
+            b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, TABLE_TOP + self.rigid_hz), wp.quat_identity()), label=nm)
+            scene.add_shape_box(b, hx=4.5, hy=2.5, hz=self.rigid_hz, cfg=cfg,
                                 color=wp.vec3(*[max(c, 0.35) for c in rcol]))
-            self.rigids[nm] = b
+            self.rigids[norm_label(nm)] = b
+            self.rigid_xy[norm_label(nm)] = (rx, ry)
             print(f"[plan] rigid '{nm}' @({rx:.0f},{ry:.0f})cm", flush=True)
+        self.rigid_grasp = None   # {body, off} while a rigid is carried
 
         scene.color(include_bending=True)
         scene.add_ground_plane(cfg=cfg)
@@ -308,21 +320,97 @@ class PlanExec:
             adaptive.update({base + 1, base + 2})
         return poses, specs, adaptive
 
+    def _place_xy(self, key):
+        """cuTAMP placement XY (cm) for an object; falls back to the box opening centre."""
+        p = self.placements.get(key)
+        if p is not None:
+            return float(p["pos"][0]) * M2CM, float(p["pos"][1]) * M2CM
+        return self.box_open[0], self.box_open[1]
+
+    def _rigid_block(self, nm):
+        """Pick a rigid (eraser) from its real spot and Place it at the cuTAMP placement in the box."""
+        bid = self.rigids[nm]
+        rx, ry = self.rigid_xy[nm]
+        px, py = self._place_xy(nm)
+        q = DOWN_Q
+        ZHI = 42.0
+        zgrab = TABLE_TOP + 2.0 * self.rigid_hz + 0.5      # fingertip on top of the eraser
+        zdrop = TABLE_TOP + 2.0 * self.rigid_hz + 1.0
+        poses = [
+            [1.5, rx, ry, ZHI, *q, OPEN],
+            [1.2, rx, ry, zgrab, *q, OPEN],
+            [0.8, rx, ry, zgrab, *q, CLOSE],               # attach
+            [1.2, rx, ry, ZHI, *q, CLOSE],
+            [2.0, px, py, ZHI, *q, CLOSE],                 # carry over the box
+            [1.2, px, py, zdrop, *q, CLOSE],               # lower in
+            [0.8, px, py, zdrop, *q, OPEN],                # release -> snap to placement
+            [1.2, px, py, ZHI, *q, OPEN],
+        ]
+        specs = {2: {"kind": "rigid", "body": bid, "name": nm,
+                     "place": (px, py, TABLE_TOP + self.rigid_hz)}}
+        return poses, specs
+
+    def _bundle_block(self, gkey):
+        """Pick the folded garment bundle (pin all its particles) and pack it at the cuTAMP placement."""
+        g = self.garments[gkey]
+        cx = (g["bbox"][0] + g["bbox"][1]) / 2.0
+        cy = (g["bbox"][2] + g["bbox"][3]) / 2.0           # fold gathers the garment near its flat centre
+        px, py = self._place_xy(gkey)
+        q = DOWN_Q
+        ZHI = 42.0
+        zgrab = TABLE_TOP + 2.0
+        box_top = self.box_open[2]
+        poses = [
+            [1.5, cx, cy, ZHI, *q, OPEN],
+            [1.5, cx, cy, zgrab, *q, OPEN],
+            [1.2, cx, cy, zgrab, *q, CLOSE],               # bundle grasp (pin all)
+            [1.5, cx, cy, ZHI, *q, CLOSE],                 # peel up
+            [3.0, px, py, ZHI, *q, CLOSE],                 # carry slowly over the box
+            [2.0, px, py, box_top + 3.0, *q, CLOSE],       # lower to just above the rim
+            [1.2, px, py, box_top + 3.0, *q, OPEN],        # release -> drops into the box, settles
+            [1.5, px, py, ZHI, *q, OPEN],
+        ]
+        specs = {2: {"kind": "bundle", "axis": "bundle", "range": (g["p0"], g["n"])}}
+        adaptive = {1, 2}
+        return poses, specs, adaptive
+
     def _build_keyframes(self):
-        """Walk the plan skeleton in order; emit a fold block for each Fold action (Increment B)."""
+        """Walk the plan skeleton IN ORDER; emit the matching block for each action.
+        Pick+Place of the same target -> one pick-place block (rigid) or pack block (garment)."""
         poses, self.kf_spec, self.fold_grasp_iv = [], {}, set()
-        done = set()
-        for op, tgt in self.actions:
+        folded, placed, i = set(), set(), 0
+        acts = self.actions
+        while i < len(acts):
+            op, tgt = acts[i]
             gkey = norm_label(tgt)
-            if op == "Fold" and gkey in self.garments and gkey not in done:
-                done.add(gkey)
+            if op == "Fold" and gkey in self.garments and gkey not in folded:
+                folded.add(gkey)
                 block, specs, adaptive = self._fold_block(gkey)
                 off = len(poses)
                 for li, sp in specs.items():
                     self.kf_spec[off + li] = sp
                 self.fold_grasp_iv.update({off + a for a in adaptive})
                 poses += block
-                print(f"[plan] scheduled Fold({tgt}) -> {len(block)} keyframes", flush=True)
+                print(f"[plan] scheduled Fold({tgt}) -> {len(block)} kf", flush=True)
+                i += 1
+            elif op == "Pick" and i + 1 < len(acts) and acts[i + 1][0] == "Place" \
+                    and norm_label(acts[i + 1][1]) == gkey and gkey not in placed:
+                placed.add(gkey)
+                off = len(poses)
+                if gkey in self.rigids:
+                    block, specs = self._rigid_block(gkey)
+                elif gkey in self.garments:
+                    block, specs, adaptive = self._bundle_block(gkey)
+                    self.fold_grasp_iv.update({off + a for a in adaptive})
+                else:
+                    i += 2; continue
+                for li, sp in specs.items():
+                    self.kf_spec[off + li] = sp
+                poses += block
+                print(f"[plan] scheduled Pick/Place({tgt}) -> {len(block)} kf", flush=True)
+                i += 2
+            else:
+                i += 1
         # park pose at the end (reachable retreat above the table centre)
         poses += [[1.5, self.tcx, self.tcy, 44.0, *DOWN_Q, OPEN]]
         self.key_poses = np.array(poses, dtype=np.float32)
@@ -440,12 +528,43 @@ class PlanExec:
         self.grasp_active = False
         print(f"[plan] RELEASE t={self.sim_time:.1f}s", flush=True)
 
+    def _ee_pinch(self, state):
+        bq = state.body_q.numpy()
+        hand = bq[self.endeffector_id, :3]; q6 = bq[self.endeffector_id, 3:7]
+        return hand + _qrot(q6, np.array(list(self.ee_off_vec)))
+
+    def _grasp_rigid(self, spec):
+        bid = spec["body"]
+        pinch = self._ee_pinch(self.state_0)
+        off = self.state_0.body_q.numpy()[bid, :3] - pinch
+        self.rigid_grasp = {"body": bid, "off": off.astype(np.float64)}
+        print(f"[plan] GRASP rigid '{spec['name']}' t={self.sim_time:.1f}s", flush=True)
+
+    def _release_rigid(self, spec):
+        px, py, pz = spec["place"]
+        for st in (self.state_0, self.state_1):
+            bq = st.body_q.numpy()
+            bq[spec["body"], :3] = [px, py, pz]
+            st.body_q.assign(bq)
+        self.rigid_grasp = None
+        print(f"[plan] PLACE rigid '{spec['name']}' -> ({px:.0f},{py:.0f})cm t={self.sim_time:.1f}s", flush=True)
+
     def _update_grasp(self):
         grip = float(self.target[-1])
-        if self.prev_grip > 0.4 and grip <= 0.4:
-            self._grasp()
-        elif self.prev_grip <= 0.4 and grip > 0.4:
-            self._release()
+        if self.prev_grip > 0.4 and grip <= 0.4:            # close
+            spec = self.kf_spec.get(self._cur_interval)
+            self._active_spec = spec
+            if spec and spec.get("kind") == "rigid":
+                self._grasp_rigid(spec)
+            else:
+                self._grasp()
+        elif self.prev_grip <= 0.4 and grip > 0.4:          # open
+            spec = getattr(self, "_active_spec", None)
+            if spec and spec.get("kind") == "rigid":
+                self._release_rigid(spec)
+            else:
+                self._release()
+            self._active_spec = None
         self.prev_grip = grip
 
     # ----------------------------- coupled simulate + render -----------------------------
@@ -462,6 +581,11 @@ class PlanExec:
             self.state_0.particle_f.zero_()
             self.model.particle_count = pc
             self.model.gravity.assign(self.gravity_earth)
+            if self.rigid_grasp is not None:                 # carry the grasped eraser under the EE
+                pinch = self._ee_pinch(self.state_1)
+                bq = self.state_1.body_q.numpy()
+                bq[self.rigid_grasp["body"], :3] = pinch + self.rigid_grasp["off"]
+                self.state_1.body_q.assign(bq)
             if self.grasp_active and self.pin_idx is not None:
                 wp.launch(pin_to_ee, dim=len(self.pin_idx),
                           inputs=[self.state_1.body_q, self.endeffector_id, self.ee_off_vec,
@@ -497,6 +621,23 @@ class PlanExec:
         self.g_uv = {k: wp.array(g["uvs"].astype(np.float32), dtype=wp.vec2) for k, g in self.garments.items()}
         self.g_fc = {k: wp.array(g["faces"].astype(np.int32), dtype=wp.int32) for k, g in self.garments.items()}
 
+    def export_ee_traj(self, path):
+        """Write the fold+pack EE (TCP) waypoints in the ur5e_base_link frame (metres) + gripper
+        state for the real UR5e transfer. The sim already runs in that frame at cm scale (robot at
+        the base origin), so base-frame metres = keyframe (x,y,z)/100. Plan-driven ordering preserved."""
+        wps = []
+        for row in self.key_poses:
+            dur, x, y, z = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+            wps.append({"dur": dur, "tcp_m": [x / M2CM, y / M2CM, z / M2CM],
+                        "gripper": "open" if float(row[8]) > 0.4 else "closed"})
+        out = {"frame": "ur5e_base_link", "units": "m", "plan": os.path.basename(self.args.plan),
+               "actions": [{"op": op, "target": tgt} for op, tgt in self.actions],
+               "placements_m": {norm_label(k): [float(c) for c in v["pos"]]
+                                for k, v in self.placements.items()},
+               "waypoints": wps}
+        json.dump(out, open(path, "w"), indent=2)
+        print(f"[plan] exported {len(wps)} EE waypoints (ur5e_base_link, m) -> {path}", flush=True)
+
     def render(self):
         v = self.viewer
         v.begin_frame(self.sim_time)
@@ -525,12 +666,16 @@ def main():
     ap.add_argument("--hold", type=float, default=600.0)
     ap.add_argument("--render_every", type=int, default=2)
     ap.add_argument("--screenshot", default=None, help="PNG base; milestone frames saved at each release")
+    ap.add_argument("--export_ee_traj", default=None, help="write the fold+pack EE trajectory (base frame, m) then exit")
     ap.add_argument("--cam", default=None)
     args = ap.parse_args()
 
     wp.init()
     viewer = ViewerGL() if args.viewer == "gl" else ViewerNull(num_frames=10**9)
     ex = PlanExec(viewer, args)
+    if args.export_ee_traj:
+        ex.export_ee_traj(args.export_ee_traj)
+        return
     if args.viewer == "gl":
         if args.cam:
             cx, cy, cz, cp, cyaw = (float(v) for v in args.cam.split(","))
