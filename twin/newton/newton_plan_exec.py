@@ -135,6 +135,7 @@ class PlanExec:
         self.initial = plan["initial"]
         self.actions = parse_skeleton(plan["skeleton"])
         self.placements = {norm_label(p["name"]): p for p in plan.get("placements", [])}
+        self.plan_statics = plan.get("statics", {})
         self.capture_dir = args.capture_dir
 
         gspecs = garment_specs(args.scene_dir)
@@ -160,11 +161,18 @@ class PlanExec:
         self.bodies_per_world = scene.body_count
         print(f"[plan] UR5e + 2F-85: wrist3 {ur_w3}, {n_arm} arm dof, pinch {tuple(pinch_local)}", flush=True)
 
-        # --- table + pedestal ---
-        obj_xy = np.array([[r["x"] * M2CM, r["y"] * M2CM] for r in real])
-        self.tcx, self.tcy = float(obj_xy[:, 0].mean()), float(obj_xy[:, 1].mean())
-        thx = float(np.ptp(obj_xy[:, 0])) / 2 + 18.0
-        thy = float(np.ptp(obj_xy[:, 1])) / 2 + 18.0
+        # PLAN FRAME: the cuTAMP plan is solved in a compact, REACHABLE frame (run_scene_tamp pulls
+        # the real cluster toward the robot because the real box sits ~92cm out, beyond UR5e reach).
+        # Execute in THAT frame so every object is reachable and pack targets align. Silhouettes and
+        # textures still come from the real masks; only the positions are the plan's.
+        bf_pose = self.plan_statics.get("box_floor", {}).get("pose", [0.271, 0.076, 0.0])
+        self.plan_box_center = np.array(bf_pose[:2])
+        bcx_cm, bcy_cm = float(self.plan_box_center[0] * M2CM), float(self.plan_box_center[1] * M2CM)
+        plan_xy = np.array([[float(p[0]) * M2CM, float(p[1]) * M2CM] for p in self.initial.values()])
+        allxy = np.vstack([plan_xy, [[bcx_cm, bcy_cm]]])
+        self.tcx, self.tcy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
+        thx = float(np.ptp(allxy[:, 0])) / 2 + 18.0
+        thy = float(np.ptp(allxy[:, 1])) / 2 + 18.0
         self.table_hz = 10.0
         self.table_top = TABLE_TOP
         tbl_idx = scene.shape_count
@@ -174,9 +182,12 @@ class PlanExec:
         scene.add_shape_box(-1, wp.transform(wp.vec3(0.0, 0.0, ROBOT_Z / 2), wp.quat_identity()),
                             hx=14.0, hy=14.0, hz=ROBOT_Z / 2, cfg=cfg)
 
-        # --- real box: open-top collision liner (hidden) + visible mesh ---
+        # --- real box MESH translated so its opening centres on the plan box_floor (reachable) ---
         bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)
         zt, zb = bv[:, 2].max(), bv[:, 2].min()
+        rim0 = bv[bv[:, 2] > zt - 0.30 * (zt - zb)]
+        bv[:, 0] += bcx_cm - float(rim0[:, 0].mean())
+        bv[:, 1] += bcy_cm - float(rim0[:, 1].mean())
         keep = bv[bf].mean(1)[:, 2] < zb + 0.82 * (zt - zb)
         liner = newton.Mesh(bv, bf[keep].reshape(-1))
         box_liner_idx = scene.shape_count
@@ -184,11 +195,10 @@ class PlanExec:
         box_viz = newton.Mesh(bv, bf.reshape(-1))
         scene.add_shape_mesh(-1, wp.transform(wp.vec3(0.0), wp.quat_identity()), mesh=box_viz,
                              cfg=ModelBuilder.ShapeConfig(has_shape_collision=False), color=wp.vec3(*bcol))
-        rim = bv[bv[:, 2] > zt - 0.30 * (zt - zb)]
-        self.box_open = (float(rim[:, 0].mean()), float(rim[:, 1].mean()), float(zt))
+        self.box_open = (bcx_cm, bcy_cm, float(zt))
 
-        # --- garments as foldable masked-grid cloth at their real positions ---
-        self.garments = {}      # label -> {p0,n,uvs,faces,bbox,real_x,real_y}
+        # --- garments as foldable masked-grid cloth at their PLAN positions (reachable frame) ---
+        self.garments = {}      # label -> {p0,n,uvs,faces,bbox}
         self.garment_order = []
         part0 = 0
         for nm, pose in self.initial.items():
@@ -200,9 +210,7 @@ class PlanExec:
             if sp is None:
                 print(f"[plan] WARN no garment spec for '{nm}', skip", flush=True)
                 continue
-            rl = real_by_label.get(norm_label(sp["label"]))
-            rx = rl["x"] * M2CM if rl else float(np.mean(pose[:2])) * M2CM
-            ry = rl["y"] * M2CM if rl else 0.0
+            rx = float(pose[0]) * M2CM; ry = float(pose[1]) * M2CM
             dim_x = max(2, round(min(sp["w"], 0.45) * M2CM / CELL))
             dim_y = max(2, round(min(sp["h"], 0.45) * M2CM / CELL))
             verts, tris, uvs = masked_grid(dim_x, dim_y, CELL, sp["mask"], sp["box_px"], sp["img"])
@@ -221,10 +229,10 @@ class PlanExec:
             part0 += n
             print(f"[plan] garment '{nm}': grid {dim_x}x{dim_y} -> {n} particles @({rx:.0f},{ry:.0f})cm", flush=True)
 
-        # --- erasers as rigid free bodies ---
+        # --- erasers as rigid free bodies at their PLAN positions (reachable frame) ---
         real_rigids = [r for r in real if not is_garment(r["label"]) and "box" not in r["label"].lower()]
         self.rigids = {}          # label -> body id
-        self.rigid_xy = {}        # label -> (x,y) real cm
+        self.rigid_xy = {}        # label -> (x,y) plan cm
         self.rigid_hz = 1.5
         ri = 0
         for nm, pose in self.initial.items():
@@ -232,7 +240,7 @@ class PlanExec:
                 continue
             rr = real_rigids[ri] if ri < len(real_rigids) else None
             ri += 1
-            rx, ry = (rr["x"] * M2CM, rr["y"] * M2CM) if rr else (np.array(pose[:2]) * M2CM)
+            rx, ry = float(pose[0]) * M2CM, float(pose[1]) * M2CM
             rcol = rr["color"] if rr else [0.2, 0.2, 0.2]
             b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, TABLE_TOP + self.rigid_hz), wp.quat_identity()), label=nm)
             scene.add_shape_box(b, hx=4.5, hy=2.5, hz=self.rigid_hz, cfg=cfg,
