@@ -295,8 +295,11 @@ class PlanExec:
             flags[si] &= ~int(newton.ShapeFlags.VISIBLE)
         self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
 
-        self.model.soft_contact_ke = 1.5e4; self.model.soft_contact_kd = 5.0e-2
-        self.model.soft_contact_mu = 0.4; self.model.soft_contact_margin = 1.0
+        # HIGH cloth-table friction so the un-grabbed fabric STAYS on the table while the grabbed
+        # flap folds over (the crease forms and the cloth deforms — instead of the whole sheet
+        # sliding rigidly). Firm normal contact so it rests flat.
+        self.model.soft_contact_ke = 2.0e4; self.model.soft_contact_kd = 8.0e-2
+        self.model.soft_contact_mu = 1.2; self.model.soft_contact_margin = 1.0
 
         self.collision_pipeline = newton.CollisionPipeline(self.model, soft_contact_margin=1.2)
         self.contacts = self.collision_pipeline.contacts()
@@ -601,7 +604,7 @@ class PlanExec:
         # instead of twisting (this only moves the arm within the redundancy; EE position unaffected)
         N = np.eye(na) - Jinv @ J3
         q_arm = state_in.joint_q.numpy()[:na]
-        dq_null = N @ (self.arm_nominal - q_arm) * 1.2
+        dq_null = N @ (self.arm_nominal - q_arm) * 0.7
         delta_q = np.zeros(self.model.joint_dof_count)
         delta_q[:na] = dq_pos + dq_null
         self.target_joint_qd.assign(delta_q.astype(np.float32))
@@ -631,12 +634,12 @@ class PlanExec:
             # the fold-1 result — a fixed line from the original bbox missed the moved fabric).
             ax = 0 if spec["axis"] == "x" else 1
             vals = sub[:, ax]
-            thr = float(np.percentile(vals, 20.0))
+            thr = float(np.percentile(vals, 14.0))                # thin edge -> the REST is free to deform
             local = np.where(vals <= thr)[0]
             if len(local) < 6:
-                local = np.argsort(vals)[:max(20, int(0.15 * len(sub)))]
-            elif len(local) > 120:                                # cap so VBD isn't over-constrained
-                local = local[np.argsort(vals[local])[:120]]
+                local = np.argsort(vals)[:max(16, int(0.12 * len(sub)))]
+            elif len(local) > 70:                                 # pin only the edge, not a big rigid chunk
+                local = local[np.argsort(vals[local])[:70]]
         else:                                                     # legacy point pinch
             local = np.argsort(np.linalg.norm(sub[:, :2] - pinch[:2], axis=1))[:40]
         idx = local + p0
@@ -800,8 +803,8 @@ def main():
     ap.add_argument("--reach", type=float, default=82.0)
     ap.add_argument("--mask_step", type=int, default=9, help="cloth_from_mask sampling stride (px); smaller = finer/more realistic, more particles")
     ap.add_argument("--cell", type=float, default=2.0, help="[unused: legacy grid] cloth grid cell (cm)")
-    ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH stiffness")
-    ap.add_argument("--bend_ke", type=float, default=5.0, help="cloth BEND stiffness")
+    ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH stiffness (deformable)")
+    ap.add_argument("--bend_ke", type=float, default=3.0, help="cloth BEND stiffness (low = drapes/folds)")
     ap.add_argument("--only_fold", default=None, help="debug: schedule ONLY this garment's fold (fast fidelity iteration)")
     ap.add_argument("--viewer", default="gl", choices=["gl", "null"])
     ap.add_argument("--hold", type=float, default=600.0)
