@@ -129,6 +129,10 @@ class PlanExec:
         self.sim_dt = self.frame_dt / self.substeps
         self.sim_time = 0.0
         self.max_reach = args.reach
+        self.cell = args.cell
+        self.stretch_ke = args.stretch_ke
+        self.bend_ke = args.bend_ke
+        self.only_fold = getattr(args, "only_fold", None)
 
         plan = json.load(open(args.plan))
         self.plan = plan
@@ -196,6 +200,8 @@ class PlanExec:
         scene.add_shape_mesh(-1, wp.transform(wp.vec3(0.0), wp.quat_identity()), mesh=box_viz,
                              cfg=ModelBuilder.ShapeConfig(has_shape_collision=False), color=wp.vec3(*bcol))
         self.box_open = (bcx_cm, bcy_cm, float(zt))
+        self.box_hw = (float(np.ptp(bv[:, 0])) / 2.0, float(np.ptp(bv[:, 1])) / 2.0)
+        self.box_floor_z = float(zb)          # inner floor z (== table top)
 
         # --- garments as foldable masked-grid cloth at their PLAN positions (reachable frame) ---
         self.garments = {}      # label -> {p0,n,uvs,faces,bbox}
@@ -211,16 +217,20 @@ class PlanExec:
                 print(f"[plan] WARN no garment spec for '{nm}', skip", flush=True)
                 continue
             rx = float(pose[0]) * M2CM; ry = float(pose[1]) * M2CM
-            dim_x = max(2, round(min(sp["w"], 0.45) * M2CM / CELL))
-            dim_y = max(2, round(min(sp["h"], 0.45) * M2CM / CELL))
-            verts, tris, uvs = masked_grid(dim_x, dim_y, CELL, sp["mask"], sp["box_px"], sp["img"])
+            dim_x = max(2, round(min(sp["w"], 0.45) * M2CM / self.cell))
+            dim_y = max(2, round(min(sp["h"], 0.45) * M2CM / self.cell))
+            verts, tris, uvs = masked_grid(dim_x, dim_y, self.cell, sp["mask"], sp["box_px"], sp["img"])
             verts = verts.astype(np.float64)
             verts[:, 0] += rx; verts[:, 1] += ry; verts[:, 2] += CLOTH_TOP
             n = len(verts)
+            # finer grid + firm STRETCH (holds the garment together, no thin over-stretched slivers)
+            # + light BEND (still drapes/folds). particle_radius scaled to the cell so a fine mesh
+            # self-collides at its own spacing (0.8 was tuned to the 2cm cell).
+            pr = max(0.35, 0.4 * self.cell)
             scene.add_cloth_mesh(pos=wp.vec3(0.0), rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0),
                                  vertices=[wp.vec3(*v) for v in verts], indices=tris.tolist(),
-                                 density=0.02, tri_ke=1.0e4, tri_ka=1.0e4, tri_kd=1.5e-6,
-                                 edge_ke=5.0, edge_kd=1.0e-2, particle_radius=0.8)
+                                 density=0.02, tri_ke=self.stretch_ke, tri_ka=self.stretch_ke, tri_kd=1.5e-6,
+                                 edge_ke=self.bend_ke, edge_kd=1.0e-2, particle_radius=pr)
             bbox = [float(verts[:, 0].min()), float(verts[:, 0].max()),
                     float(verts[:, 1].min()), float(verts[:, 1].max())]
             self.garments[norm_label(nm)] = dict(label=nm, p0=part0, n=n, uvs=uvs,
@@ -328,11 +338,18 @@ class PlanExec:
             adaptive.update({base + 1, base + 2})
         return poses, specs, adaptive
 
+    def _in_box(self, x, y, margin=5.0):
+        """Clamp an XY into the box interior (keep `margin` cm off the walls) so bundles/erasers
+        settle flat on the floor instead of perching on a rim."""
+        cx, cy = self.box_open[0], self.box_open[1]
+        hx = max(1.0, self.box_hw[0] - margin); hy = max(1.0, self.box_hw[1] - margin)
+        return cx + float(np.clip(x - cx, -hx, hx)), cy + float(np.clip(y - cy, -hy, hy))
+
     def _place_xy(self, key):
-        """cuTAMP placement XY (cm) for an object; falls back to the box opening centre."""
+        """cuTAMP placement XY (cm), clamped inside the box interior."""
         p = self.placements.get(key)
         if p is not None:
-            return float(p["pos"][0]) * M2CM, float(p["pos"][1]) * M2CM
+            return self._in_box(float(p["pos"][0]) * M2CM, float(p["pos"][1]) * M2CM)
         return self.box_open[0], self.box_open[1]
 
     def _rigid_block(self, nm):
@@ -368,15 +385,23 @@ class PlanExec:
         ZHI = 42.0
         zgrab = TABLE_TOP + 2.0
         box_top = self.box_open[2]
+        # set the bundle DOWN near the box floor rather than dropping from the rim: the fingertip
+        # sits ~2cm above the pinned particles, so fingertip z = floor + ~5.5 lands the bundle bottom
+        # on the floor. Hold there (pinned) to kill swing, release gently, THEN lift out.
+        z_set = self.box_floor_z + 5.5
         poses = [
             [1.5, cx, cy, ZHI, *q, OPEN],
             [1.5, cx, cy, zgrab, *q, OPEN],
             [1.2, cx, cy, zgrab, *q, CLOSE],               # bundle grasp (pin all)
             [1.5, cx, cy, ZHI, *q, CLOSE],                 # peel up
             [3.0, px, py, ZHI, *q, CLOSE],                 # carry slowly over the box
-            [2.0, px, py, box_top + 3.0, *q, CLOSE],       # lower to just above the rim
-            [1.2, px, py, box_top + 3.0, *q, OPEN],        # release -> drops into the box, settles
-            [1.5, px, py, ZHI, *q, OPEN],
+            [1.8, px, py, box_top + 4.0, *q, CLOSE],       # descend to the opening
+            [1.8, px, py, z_set, *q, CLOSE],               # lower DEEP, set on the box floor
+            [1.0, px, py, z_set, *q, CLOSE],               # hold to damp the swing (still pinned)
+            [1.0, px, py, z_set, *q, OPEN],                # release gently at the floor
+            [1.5, px, py, z_set, *q, OPEN],                # dwell open -> the bundle settles flat
+            [1.5, px, py, box_top + 6.0, *q, OPEN],        # lift straight out (clear of the pile)
+            [1.5, px, py, ZHI, *q, OPEN],                  # retreat
         ]
         specs = {2: {"kind": "bundle", "axis": "bundle", "range": (g["p0"], g["n"])}}
         adaptive = {1, 2}
@@ -386,6 +411,23 @@ class PlanExec:
         """Walk the plan skeleton IN ORDER; emit the matching block for each action.
         Pick+Place of the same target -> one pick-place block (rigid) or pack block (garment)."""
         poses, self.kf_spec, self.fold_grasp_iv = [], {}, set()
+        # fast-iteration debug: schedule ONLY one garment's fold (no packs) to tune fold fidelity
+        if self.only_fold:
+            gkey = norm_label(self.only_fold)
+            block, specs, adaptive = self._fold_block(gkey)
+            for li, sp in specs.items():
+                self.kf_spec[li] = sp
+            self.fold_grasp_iv.update(adaptive)
+            poses += block
+            poses += [[1.5, self.tcx, self.tcy, 44.0, *DOWN_Q, OPEN]]
+            self.key_poses = np.array(poses, dtype=np.float32)
+            self.key_times = np.cumsum(self.key_poses[:, 0])
+            self.targets = self.key_poses[:, 1:]
+            self.target = self.targets[0]
+            self.pose_reach = np.full(len(self.targets), self.max_reach, dtype=np.float32)
+            self.total_time = float(self.key_times[-1])
+            print(f"[plan] ONLY_FOLD({self.only_fold}): {len(self.targets)} kf, {self.total_time:.0f}s", flush=True)
+            return
         folded, placed, i = set(), set(), 0
         acts = self.actions
         while i < len(acts):
@@ -670,6 +712,10 @@ def main():
     ap.add_argument("--substeps", type=int, default=8)
     ap.add_argument("--vbd_iters", type=int, default=10)
     ap.add_argument("--reach", type=float, default=82.0)
+    ap.add_argument("--cell", type=float, default=2.0, help="cloth grid cell (cm); smaller = finer/smoother fold")
+    ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH stiffness")
+    ap.add_argument("--bend_ke", type=float, default=5.0, help="cloth BEND stiffness")
+    ap.add_argument("--only_fold", default=None, help="debug: schedule ONLY this garment's fold (fast fidelity iteration)")
     ap.add_argument("--viewer", default="gl", choices=["gl", "null"])
     ap.add_argument("--hold", type=float, default=600.0)
     ap.add_argument("--render_every", type=int, default=2)
