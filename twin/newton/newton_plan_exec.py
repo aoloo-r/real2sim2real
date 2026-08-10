@@ -40,8 +40,9 @@ from newton._src.utils.texture import load_texture
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from newton_fold import (masked_grid, pin_to_ee, compute_ee_delta, _dls_pinv,  # noqa: E402
                          DOWN_Q, OPEN, CLOSE)
+from cloth_mesh import cloth_from_mask  # noqa: E402  realistic garment (real silhouette+depth+photo)
 from ur5e_gripper import add_ur5e_gripper  # noqa: E402
-from newton_twin_hydro import load_scene_objects  # noqa: E402
+from newton_twin_hydro import load_scene_objects, load_obj_mesh  # noqa: E402
 import sam3d_scene  # noqa: E402
 
 GARMENT_KW = ("shirt", "cloth", "pants", "trouser", "legging", "garment", "towel", "fabric", "tee")
@@ -100,8 +101,8 @@ def garment_specs(scene_dir):
             from PIL import Image
             mask = np.array(Image.open(mpath).convert("L"))
         specs[norm_label(o.get("label", ""))] = dict(
-            label=o.get("label", "cloth"), id=o.get("id", i), w=w, h=h,
-            box_px=box_px, img=img, mask=mask, color=o.get("display_color", [0.6, 0.6, 0.65]))
+            label=o.get("label", "cloth"), id=o.get("id", i), w=w, h=h, box_px=box_px, img=img,
+            mask=mask, mask_path=mpath, color=o.get("display_color", [0.6, 0.6, 0.65]))
     return specs
 
 
@@ -132,6 +133,7 @@ class PlanExec:
         self.cell = args.cell
         self.stretch_ke = args.stretch_ke
         self.bend_ke = args.bend_ke
+        self.mask_step = getattr(args, "mask_step", 9)
         self.only_fold = getattr(args, "only_fold", None)
 
         plan = json.load(open(args.plan))
@@ -165,33 +167,41 @@ class PlanExec:
         self.bodies_per_world = scene.body_count
         print(f"[plan] UR5e + 2F-85: wrist3 {ur_w3}, {n_arm} arm dof, pinch {tuple(pinch_local)}", flush=True)
 
-        # PLAN FRAME: the cuTAMP plan is solved in a compact, REACHABLE frame (run_scene_tamp pulls
-        # the real cluster toward the robot because the real box sits ~92cm out, beyond UR5e reach).
-        # Execute in THAT frame so every object is reachable and pack targets align. Silhouettes and
-        # textures still come from the real masks; only the positions are the plan's.
+        # REAL RGBD ARRANGEMENT, translated to reach: keep every object at its real reconstructed
+        # position (so the scene matches the RGBD photo) but shift the WHOLE cluster toward the robot
+        # by a SINGLE translation, so the far box comes within the UR5e's reach. A pure translation
+        # preserves the relative layout — unlike cuTAMP's compressed frame, which scrambled it.
         bf_pose = self.plan_statics.get("box_floor", {}).get("pose", [0.271, 0.076, 0.0])
         self.plan_box_center = np.array(bf_pose[:2])
-        bcx_cm, bcy_cm = float(self.plan_box_center[0] * M2CM), float(self.plan_box_center[1] * M2CM)
-        plan_xy = np.array([[float(p[0]) * M2CM, float(p[1]) * M2CM] for p in self.initial.values()])
-        allxy = np.vstack([plan_xy, [[bcx_cm, bcy_cm]]])
+        bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)     # real box (cm, base at TABLE_TOP)
+        zt, zb = bv[:, 2].max(), bv[:, 2].min()
+        rim0 = bv[bv[:, 2] > zt - 0.30 * (zt - zb)]
+        far = np.array([float(rim0[:, 0].mean()), float(rim0[:, 1].mean())])  # real box opening = farthest
+        far_r = float(np.linalg.norm(far))
+        REACH_SAFE = 72.0
+        self.frame_delta = far * (REACH_SAFE / far_r - 1.0) if far_r > REACH_SAFE else np.zeros(2)
+        dx, dy = float(self.frame_delta[0]), float(self.frame_delta[1])
+        print(f"[plan] REAL frame shifted toward robot by ({dx:.0f},{dy:.0f})cm "
+              f"(box {far_r:.0f}->{REACH_SAFE:.0f}cm; layout preserved)", flush=True)
+
+        real_xy = {norm_label(r["label"]): (r["x"] * M2CM + dx, r["y"] * M2CM + dy) for r in real}
+        bopen = (far[0] + dx, far[1] + dy)
+        allxy = np.array(list(real_xy.values()) + [list(bopen)])
         self.tcx, self.tcy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
-        thx = float(np.ptp(allxy[:, 0])) / 2 + 18.0
-        thy = float(np.ptp(allxy[:, 1])) / 2 + 18.0
+        thx = float(np.ptp(allxy[:, 0])) / 2 + 22.0
+        thy = float(np.ptp(allxy[:, 1])) / 2 + 22.0
         self.table_hz = 10.0
         self.table_top = TABLE_TOP
         tbl_idx = scene.shape_count
+        # VISIBLE light table (like the RGBD) so the dark erasers read against it
         scene.add_shape_box(-1, wp.transform(wp.vec3(self.tcx, self.tcy, TABLE_TOP - 10.0), wp.quat_identity()),
-                            hx=thx, hy=thy, hz=10.0, cfg=cfg)
+                            hx=thx, hy=thy, hz=10.0, cfg=cfg, color=wp.vec3(0.80, 0.80, 0.82))
         ped_idx = scene.shape_count
         scene.add_shape_box(-1, wp.transform(wp.vec3(0.0, 0.0, ROBOT_Z / 2), wp.quat_identity()),
                             hx=14.0, hy=14.0, hz=ROBOT_Z / 2, cfg=cfg)
 
-        # --- real box MESH translated so its opening centres on the plan box_floor (reachable) ---
-        bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)
-        zt, zb = bv[:, 2].max(), bv[:, 2].min()
-        rim0 = bv[bv[:, 2] > zt - 0.30 * (zt - zb)]
-        bv[:, 0] += bcx_cm - float(rim0[:, 0].mean())
-        bv[:, 1] += bcy_cm - float(rim0[:, 1].mean())
+        # box mesh shifted; open-top collision liner (hidden) + visible real mesh
+        bv[:, 0] += dx; bv[:, 1] += dy
         keep = bv[bf].mean(1)[:, 2] < zb + 0.82 * (zt - zb)
         liner = newton.Mesh(bv, bf[keep].reshape(-1))
         box_liner_idx = scene.shape_count
@@ -199,15 +209,15 @@ class PlanExec:
         box_viz = newton.Mesh(bv, bf.reshape(-1))
         scene.add_shape_mesh(-1, wp.transform(wp.vec3(0.0), wp.quat_identity()), mesh=box_viz,
                              cfg=ModelBuilder.ShapeConfig(has_shape_collision=False), color=wp.vec3(*bcol))
-        self.box_open = (bcx_cm, bcy_cm, float(zt))
+        self.box_open = (bopen[0], bopen[1], float(zt))
         self.box_hw = (float(np.ptp(bv[:, 0])) / 2.0, float(np.ptp(bv[:, 1])) / 2.0)
-        self.box_floor_z = float(zb)          # inner floor z (== table top)
+        self.box_floor_z = float(zb)
 
-        # --- garments as foldable masked-grid cloth at their PLAN positions (reachable frame) ---
-        self.garments = {}      # label -> {p0,n,uvs,faces,bbox}
+        # --- garments: real silhouette + depth + photo texture, at their REAL positions (shifted) ---
+        self.garments = {}
         self.garment_order = []
         part0 = 0
-        for nm, pose in self.initial.items():
+        for nm in list(self.initial):
             if not is_garment(nm):
                 continue
             key = next((k for k in gspecs if k == norm_label(nm) or k in norm_label(nm)
@@ -216,56 +226,72 @@ class PlanExec:
             if sp is None:
                 print(f"[plan] WARN no garment spec for '{nm}', skip", flush=True)
                 continue
-            rx = float(pose[0]) * M2CM; ry = float(pose[1]) * M2CM
-            dim_x = max(2, round(min(sp["w"], 0.45) * M2CM / self.cell))
-            dim_y = max(2, round(min(sp["h"], 0.45) * M2CM / self.cell))
-            verts, tris, uvs = masked_grid(dim_x, dim_y, self.cell, sp["mask"], sp["box_px"], sp["img"])
-            verts = verts.astype(np.float64)
-            verts[:, 0] += rx; verts[:, 1] += ry; verts[:, 2] += CLOTH_TOP
-            n = len(verts)
-            # finer grid + firm STRETCH (holds the garment together, no thin over-stretched slivers)
-            # + light BEND (still drapes/folds). particle_radius scaled to the cell so a fine mesh
-            # self-collides at its own spacing (0.8 was tuned to the 2cm cell).
-            pr = max(0.35, 0.4 * self.cell)
+            v, faces, uvs, _tex = cloth_from_mask(sp["mask_path"], self.capture_dir,
+                                                  step=self.mask_step, base_frame=args.base_frame)
+            v = v.astype(np.float64)
+            v[:, 0] += dx; v[:, 1] += dy                 # keep the REAL shape+position; just shift cluster
+            v[:, 2] += CLOTH_TOP - v[:, 2].min()         # lie flat on the table
+            faces = faces.reshape(-1, 3).astype(np.int32)
+            n = len(v)
             scene.add_cloth_mesh(pos=wp.vec3(0.0), rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0),
-                                 vertices=[wp.vec3(*v) for v in verts], indices=tris.tolist(),
+                                 vertices=[wp.vec3(*x) for x in v], indices=faces.reshape(-1).tolist(),
                                  density=0.02, tri_ke=self.stretch_ke, tri_ka=self.stretch_ke, tri_kd=1.5e-6,
-                                 edge_ke=self.bend_ke, edge_kd=1.0e-2, particle_radius=pr)
-            bbox = [float(verts[:, 0].min()), float(verts[:, 0].max()),
-                    float(verts[:, 1].min()), float(verts[:, 1].max())]
+                                 edge_ke=self.bend_ke, edge_kd=1.0e-2, particle_radius=0.8)
+            bbox = [float(v[:, 0].min()), float(v[:, 0].max()),
+                    float(v[:, 1].min()), float(v[:, 1].max())]
             self.garments[norm_label(nm)] = dict(label=nm, p0=part0, n=n, uvs=uvs,
-                                                 faces=tris.reshape(-1), bbox=bbox, real_x=rx, real_y=ry)
+                                                 faces=faces.reshape(-1), bbox=bbox,
+                                                 real_x=float(v[:, 0].mean()), real_y=float(v[:, 1].mean()))
             self.garment_order.append(norm_label(nm))
             part0 += n
-            print(f"[plan] garment '{nm}': grid {dim_x}x{dim_y} -> {n} particles @({rx:.0f},{ry:.0f})cm", flush=True)
+            print(f"[plan] garment '{nm}': realistic mask cloth -> {n} particles "
+                  f"@({v[:,0].mean():.0f},{v[:,1].mean():.0f})cm", flush=True)
 
-        # --- erasers as rigid free bodies at their PLAN positions (reachable frame) ---
+        # --- erasers as rigid free bodies with their REAL reconstructed MESHES (not primitive boxes) ---
+        # the plan names them rigid_1/rigid_2 but both are "black eraser"; pair plan rigid -> real
+        # eraser by order and key by the PLAN name so the pack actions resolve.
         real_rigids = [r for r in real if not is_garment(r["label"]) and "box" not in r["label"].lower()]
-        self.rigids = {}          # label -> body id
-        self.rigid_xy = {}        # label -> (x,y) plan cm
+        plan_rigids = [nm for nm in self.initial if not is_garment(nm)]
+        self.rigids = {}
+        self.rigid_xy = {}
         self.rigid_hz = 1.5
-        ri = 0
-        for nm, pose in self.initial.items():
-            if is_garment(nm):
+        for i, plan_nm in enumerate(plan_rigids):
+            r = real_rigids[i] if i < len(real_rigids) else None
+            if r is None:
                 continue
-            rr = real_rigids[ri] if ri < len(real_rigids) else None
-            ri += 1
-            rx, ry = float(pose[0]) * M2CM, float(pose[1]) * M2CM
-            rcol = rr["color"] if rr else [0.2, 0.2, 0.2]
-            b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, TABLE_TOP + self.rigid_hz), wp.quat_identity()), label=nm)
-            scene.add_shape_box(b, hx=4.5, hy=2.5, hz=self.rigid_hz, cfg=cfg,
-                                color=wp.vec3(*[max(c, 0.35) for c in rcol]))
-            self.rigids[norm_label(nm)] = b
-            self.rigid_xy[norm_label(nm)] = (rx, ry)
-            print(f"[plan] rigid '{nm}' @({rx:.0f},{ry:.0f})cm", flush=True)
-        self.rigid_grasp = None   # {body, off} while a rigid is carried
+            nm = norm_label(plan_nm)
+            rx, ry = r["x"] * M2CM + dx, r["y"] * M2CM + dy
+            hz = max(1.0, float(r.get("height", 0.03)) * M2CM * 0.5)
+            self.rigid_hz = hz
+            b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, TABLE_TOP + hz), wp.quat_identity()), label=nm)
+            mp = r.get("mesh_path")
+            placed = False
+            if mp and os.path.exists(mp):
+                try:
+                    mesh, _ = load_obj_mesh(mp)             # recentered newton mesh (m)
+                    mv = np.asarray(mesh.vertices)
+                    ext = float(max(np.ptp(mv[:, 0]), np.ptp(mv[:, 1]), np.ptp(mv[:, 2])))
+                    meas = float(max(r.get("radius", 0.05) * 2.0, r.get("height", 0.03)))
+                    scale = (meas / ext) * M2CM if ext > 1e-6 else M2CM
+                    scene.add_shape_mesh(b, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), mesh=mesh,
+                                         cfg=cfg, color=wp.vec3(*r["color"]),
+                                         scale=wp.vec3(scale, scale, scale))
+                    placed = True
+                except Exception as e:
+                    print(f"[plan] eraser mesh '{nm}' failed ({e}); box fallback", flush=True)
+            if not placed:
+                scene.add_shape_box(b, hx=4.5, hy=2.5, hz=hz, cfg=cfg, color=wp.vec3(*r["color"]))
+            self.rigids[nm] = b
+            self.rigid_xy[nm] = (rx, ry)
+            print(f"[plan] rigid '{nm}' (real mesh={'yes' if placed else 'no'}) @({rx:.0f},{ry:.0f})cm", flush=True)
+        self.rigid_grasp = None
 
         scene.color(include_bending=True)
         scene.add_ground_plane(cfg=cfg)
         self.model = scene.finalize()
 
         flags = self.model.shape_flags.numpy()
-        for si in (tbl_idx, ped_idx, box_liner_idx):
+        for si in (ped_idx, box_liner_idx):          # keep the TABLE visible (erasers read on it)
             flags[si] &= ~int(newton.ShapeFlags.VISIBLE)
         self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
 
@@ -291,6 +317,10 @@ class PlanExec:
         self.state_0 = self.model.state(); self.state_1 = self.model.state()
         eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
+        # the cloth solver zeroes free-body (eraser) poses in its output state, so track each
+        # eraser's intended world pose and re-stamp it every render frame (else they vanish).
+        _bq0 = self.state_0.body_q.numpy()
+        self.rigid_pose = {bid: _bq0[bid].copy() for bid in self.rigids.values()}
         self.control = self.model.control()
         self.target_joint_qd = wp.zeros_like(self.state_0.joint_qd)
 
@@ -306,36 +336,50 @@ class PlanExec:
 
     # ----------------------------- keyframe schedule (plan-driven) -----------------------------
     def _fold_block(self, gkey):
-        """5-grasp garment fold (newton_fold pin-mode profile), parameterized by this garment's
-        CURRENT flat bbox. Returns (poses, specs_by_local_index)."""
+        """REAL garment fold — fold in quarters, the way laundry is folded. Each fold grabs a WHOLE
+        edge (a coherent flap, not a corner), peels it just off the table, and HINGES it over the
+        crease onto the other half in a low arc, then lays it flat. The fabric stays flat and keeps
+        its shape — no corner-drag bunching. Fold 1: left half over right (hinge = vertical centre
+        line). Fold 2: bottom half over top (hinge = horizontal centre line)."""
         g = self.garments[gkey]
         x0, x1, y0, y1 = g["bbox"]
         cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-        h = y1 - y0
-        yt, yb = y0 + 0.72 * h, y0 + 0.28 * h
         q = DOWN_Q
-        ZHI, ZLIFT, ZAPEX = 42.0, 28.0, 31.0
-        gsteps = [("+x-top", (x1, yt), (cx, yt)), ("+x-bot", (x1, yb), (cx, yb)),
-                  ("-x-top", (x0, yt), (cx, yt)), ("-x-bot", (x0, yb), (cx, yb)),
-                  ("bottom", (cx, y0), (cx, cy))]
+        ZHI = 40.0
+        p0, n = g["p0"], g["n"]
+        folds = [
+            # fold the -x half over the +x half: grasp the x=x0 edge, hinge over cx, lay at x1
+            {"axis": "x", "edge": x0, "to": x1, "hinge": cx, "along": (y0, y1), "mid": cy},
+            # fold the -y half over the +y half (of the now half-width garment): grasp y=y0 edge
+            {"axis": "y", "edge": y0, "to": y1, "hinge": cy, "along": (cx, x1), "mid": (cx + x1) / 2.0},
+        ]
         poses, specs, adaptive = [], {}, set()
-        for i, (axis, gp, t) in enumerate(gsteps):
+        for i, f in enumerate(folds):
             base = len(poses)
-            zg, zland = 21.0 + 0.4 * i, 21.6 + 0.4 * i
-            mid = ((gp[0] + t[0]) / 2.0, (gp[1] + t[1]) / 2.0)
+            z_edge = TABLE_TOP + 0.6 + i * 1.6       # grasp just onto the (possibly doubled) fabric
+            dist = abs(f["to"] - f["edge"])
+            z_ap = TABLE_TOP + min(0.42 * dist, 14.0)  # hinge the flap over the crease, staying LOW
+            z_land = TABLE_TOP + 1.2 + i * 1.6
+            if f["axis"] == "x":
+                g_xy, h_xy, t_xy = (f["edge"], f["mid"]), (f["hinge"], f["mid"]), (f["to"], f["mid"])
+            else:
+                g_xy, h_xy, t_xy = (f["mid"], f["edge"]), (f["mid"], f["hinge"]), (f["mid"], f["to"])
+            q1 = ((f["hinge"] + f["to"]) / 2.0)          # quarter point past the crease (extra arc waypoint)
+            m_xy = (q1, f["mid"]) if f["axis"] == "x" else (f["mid"], q1)
             poses += [
-                [2.0, gp[0], gp[1], ZHI, *q, OPEN],
-                [1.5, gp[0], gp[1], zg, *q, OPEN],
-                [1.0, gp[0], gp[1], zg, *q, CLOSE],       # grasp fires here
-                [2.0, gp[0], gp[1], ZLIFT, *q, CLOSE],
-                [2.5, mid[0], mid[1], ZAPEX, *q, CLOSE],
-                [2.0, t[0], t[1], ZLIFT, *q, CLOSE],
-                [1.5, t[0], t[1], zland, *q, CLOSE],
-                [1.0, t[0], t[1], zland, *q, OPEN],       # release
-                [1.5, t[0], t[1], ZHI, *q, OPEN],
+                [1.8, g_xy[0], g_xy[1], ZHI, *q, OPEN],         # approach above the edge
+                [1.6, g_xy[0], g_xy[1], z_edge, *q, OPEN],      # descend low onto the whole edge
+                [1.2, g_xy[0], g_xy[1], z_edge, *q, CLOSE],     # grasp the ENTIRE edge (band)
+                [1.6, g_xy[0], g_xy[1], z_edge + 3.0, *q, CLOSE],  # peel just off the table
+                [3.2, h_xy[0], h_xy[1], z_ap, *q, CLOSE],       # slow hinge UP over the crease (low arc)
+                [3.0, m_xy[0], m_xy[1], z_edge + 3.0, *q, CLOSE],  # slow hinge DOWN toward the far half
+                [2.2, t_xy[0], t_xy[1], z_land, *q, CLOSE],     # lay it flat on the other half
+                [1.2, t_xy[0], t_xy[1], z_land, *q, OPEN],      # release
+                [1.2, t_xy[0], t_xy[1], z_land, *q, OPEN],      # dwell -> the flap settles flat
+                [1.5, t_xy[0], t_xy[1], ZHI, *q, OPEN],         # retreat up
             ]
-            specs[base + 2] = {"kind": "fold", "axis": axis, "range": (g["p0"], g["n"])}
-            adaptive.update({base + 1, base + 2})
+            specs[base + 2] = {"kind": "edge", "axis": f["axis"], "edge": f["edge"],
+                               "along": f["along"], "band": 3.5, "range": (p0, n)}
         return poses, specs, adaptive
 
     def _in_box(self, x, y, margin=5.0):
@@ -346,10 +390,13 @@ class PlanExec:
         return cx + float(np.clip(x - cx, -hx, hx)), cy + float(np.clip(y - cy, -hy, hy))
 
     def _place_xy(self, key):
-        """cuTAMP placement XY (cm), clamped inside the box interior."""
+        """Map the cuTAMP in-box arrangement (offset from the plan box centre) onto the REAL box
+        opening, clamped inside the interior. Preserves which object goes where inside the box."""
         p = self.placements.get(key)
         if p is not None:
-            return self._in_box(float(p["pos"][0]) * M2CM, float(p["pos"][1]) * M2CM)
+            dxp = (float(p["pos"][0]) - float(self.plan_box_center[0])) * M2CM
+            dyp = (float(p["pos"][1]) - float(self.plan_box_center[1])) * M2CM
+            return self._in_box(self.box_open[0] + dxp, self.box_open[1] + dyp)
         return self.box_open[0], self.box_open[1]
 
     def _rigid_block(self, nm):
@@ -496,6 +543,9 @@ class PlanExec:
         self.body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
         self.J_flat = wp.empty(out_dim * self.model.joint_dof_count, dtype=float)
         self.ee_delta = wp.empty(1, dtype=wp.spatial_vector)
+        # nominal arm config (the tidy home pose) — the null-space bias keeps the wrist/gripper
+        # near this so it stays pointed down instead of twisting into awkward angles.
+        self.arm_nominal = self.model.joint_q.numpy()[:self.n_arm].copy()
 
     def _jacobian(self, joint_q, joint_qd):
         joint_q.requires_grad = True; joint_qd.requires_grad = True
@@ -515,7 +565,16 @@ class PlanExec:
         interval = min(interval, len(self.targets) - 1)
         self.target = self.targets[interval]
         self._cur_interval = interval
-        tgt = np.array(self.target[:7], dtype=float)
+        # SMOOTH the arm: interpolate the EE position along the segment from the previous keyframe
+        # to this one (cosine ease) instead of snapping to each keyframe -> no jerky yanks, and the
+        # cloth is carried gently (violent target jumps were also destabilizing the fold).
+        t_to = float(self.key_times[interval])
+        t_from = float(self.key_times[interval - 1]) if interval > 0 else 0.0
+        prev = self.targets[interval - 1] if interval > 0 else self.targets[interval]
+        a = float(np.clip((self.sim_time - t_from) / max(1e-3, t_to - t_from), 0.0, 1.0))
+        a = 0.5 - 0.5 * np.cos(np.pi * a)                 # ease in/out
+        pos = np.array(prev[:3], float) + a * (np.array(self.target[:3], float) - np.array(prev[:3], float))
+        tgt = np.array([pos[0], pos[1], pos[2], *self.target[3:7]], dtype=float)
         rb = np.array([self.robot_base[0], self.robot_base[1]])
         dxy = tgt[:2] - rb; r = float(np.linalg.norm(dxy))
         mr = float(self.pose_reach[interval])
@@ -535,9 +594,16 @@ class PlanExec:
         J = self.J_flat.numpy().reshape(-1, self.model.joint_dof_count)
         delta = self.ee_delta.numpy()[0]
         na = self.n_arm
-        dq_arm = _dls_pinv(J[:3, :na]) @ delta[:3] * 3.0
+        J3 = J[:3, :na]
+        Jinv = _dls_pinv(J3)
+        dq_pos = Jinv @ delta[:3] * 3.0
+        # null-space bias toward the tidy nominal config -> the wrist/gripper stays pointed down
+        # instead of twisting (this only moves the arm within the redundancy; EE position unaffected)
+        N = np.eye(na) - Jinv @ J3
+        q_arm = state_in.joint_q.numpy()[:na]
+        dq_null = N @ (self.arm_nominal - q_arm) * 1.2
         delta_q = np.zeros(self.model.joint_dof_count)
-        delta_q[:na] = dq_arm
+        delta_q[:na] = dq_pos + dq_null
         self.target_joint_qd.assign(delta_q.astype(np.float32))
 
     # ----------------------------- grasp / pin (range-aware) -----------------------------
@@ -556,13 +622,28 @@ class PlanExec:
 
         pq = self.state_0.particle_q.numpy()
         sub = pq[p0:p0 + n]
-        if spec["kind"] == "bundle":
-            idx = np.arange(p0, p0 + n)
+        kind = spec["kind"]
+        if kind == "bundle":
+            local = np.arange(n)
+        elif kind == "edge":
+            # pin the WHOLE leading edge as a coherent flap. Both folds grasp the MIN side along
+            # their axis, so grab the bottom ~20% of the CURRENT fabric along that axis (robust to
+            # the fold-1 result — a fixed line from the original bbox missed the moved fabric).
+            ax = 0 if spec["axis"] == "x" else 1
+            vals = sub[:, ax]
+            thr = float(np.percentile(vals, 20.0))
+            local = np.where(vals <= thr)[0]
+            if len(local) < 6:
+                local = np.argsort(vals)[:max(20, int(0.15 * len(sub)))]
+            elif len(local) > 120:                                # cap so VBD isn't over-constrained
+                local = local[np.argsort(vals[local])[:120]]
+        else:                                                     # legacy point pinch
+            local = np.argsort(np.linalg.norm(sub[:, :2] - pinch[:2], axis=1))[:40]
+        idx = local + p0
+        if kind in ("bundle", "edge"):
+            # keep the grabbed set's SHAPE and hang it under the fingertip -> the edge stays straight
             anchor = np.array([pq[idx, 0].mean(), pq[idx, 1].mean(), pinch[2]])
         else:
-            d2 = np.linalg.norm(sub[:, :2] - pinch[:2], axis=1)
-            local = np.argsort(d2)[:40]
-            idx = local + p0
             anchor = pinch
         self.pin_idx = wp.array(idx.astype(np.int32), dtype=wp.int32)
         self.pin_off = wp.array((pq[idx] - anchor).astype(np.float32), dtype=wp.vec3)
@@ -691,6 +772,11 @@ class PlanExec:
     def render(self):
         v = self.viewer
         v.begin_frame(self.sim_time)
+        if self.rigid_pose:                          # re-stamp eraser poses (cloth solver drops them)
+            bq = self.state_0.body_q.numpy()
+            for bid, pose in self.rigid_pose.items():
+                bq[bid] = pose
+            self.state_0.body_q.assign(bq)
         pq = self.state_0.particle_q.numpy()
         for k, g in self.garments.items():
             verts = pq[g["p0"]:g["p0"] + g["n"]].astype(np.float32)
@@ -712,7 +798,8 @@ def main():
     ap.add_argument("--substeps", type=int, default=8)
     ap.add_argument("--vbd_iters", type=int, default=10)
     ap.add_argument("--reach", type=float, default=82.0)
-    ap.add_argument("--cell", type=float, default=2.0, help="cloth grid cell (cm); smaller = finer/smoother fold")
+    ap.add_argument("--mask_step", type=int, default=9, help="cloth_from_mask sampling stride (px); smaller = finer/more realistic, more particles")
+    ap.add_argument("--cell", type=float, default=2.0, help="[unused: legacy grid] cloth grid cell (cm)")
     ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH stiffness")
     ap.add_argument("--bend_ke", type=float, default=5.0, help="cloth BEND stiffness")
     ap.add_argument("--only_fold", default=None, help="debug: schedule ONLY this garment's fold (fast fidelity iteration)")
