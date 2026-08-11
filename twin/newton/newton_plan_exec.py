@@ -51,8 +51,8 @@ GRAVITY = -981.0
 TABLE_TOP = 20.0        # table top plane z (cm) — matches newton_fold's keyframe z-convention
 CLOTH_TOP = TABLE_TOP + 1.0
 CELL = 2.0              # cloth grid cell (cm)
-ROBOT_Z = 34.0                    # base raised on a pedestal so the arm reaches DOWN to the table
-ROBOT_BASE_XY = (-10.0, -6.0)     # mounted BACK from the objects so the arm extends (not cramped)
+ROBOT_Z = 46.0                    # UR5e mount height on the MOBILE base (off the table, reaches DOWN)
+ROBOT_BASE_XY = (-14.0, 8.0)      # OFF the table, beside it — the arm is on a mobile manipulator
 
 
 def is_garment(label):
@@ -178,17 +178,22 @@ class PlanExec:
         plan_xy = {norm_label(k): (float(v[0]) * M2CM, float(v[1]) * M2CM) for k, v in self.initial.items()}
         allxy = np.array(list(plan_xy.values()) + [[bfx, bfy]])
         self.tcx, self.tcy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
-        thx = float(np.ptp(allxy[:, 0])) / 2 + 32.0        # generous margin so nothing drapes off
-        thy = float(np.ptp(allxy[:, 1])) / 2 + 32.0
+        # table sized to sit UNDER the objects only (the robot is off it, on its mobile base)
+        thx = float(np.ptp(allxy[:, 0])) / 2 + 16.0
+        thy = float(np.ptp(allxy[:, 1])) / 2 + 16.0
+        self.tcx = 0.5 * float(allxy[:, 0].min() + allxy[:, 0].max())     # centre on the object cluster
+        self.tcy = 0.5 * float(allxy[:, 1].min() + allxy[:, 1].max())
         self.table_hz = 10.0
         self.table_top = TABLE_TOP
         tbl_idx = scene.shape_count
         # VISIBLE light table (like the RGBD) so the dark erasers read against it
         scene.add_shape_box(-1, wp.transform(wp.vec3(self.tcx, self.tcy, TABLE_TOP - 10.0), wp.quat_identity()),
                             hx=thx, hy=thy, hz=10.0, cfg=cfg, color=wp.vec3(0.80, 0.80, 0.82))
+        # VISIBLE mobile-manipulator base: a floor-standing platform (off the table) the UR5e mounts on
         ped_idx = scene.shape_count
         scene.add_shape_box(-1, wp.transform(wp.vec3(ROBOT_BASE_XY[0], ROBOT_BASE_XY[1], ROBOT_Z / 2),
-                                             wp.quat_identity()), hx=14.0, hy=14.0, hz=ROBOT_Z / 2, cfg=cfg)
+                                             wp.quat_identity()), hx=17.0, hy=17.0, hz=ROBOT_Z / 2, cfg=cfg,
+                            color=wp.vec3(0.28, 0.30, 0.34))
 
         # real box mesh placed so its opening centres on the plan box_floor
         bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)
@@ -287,7 +292,7 @@ class PlanExec:
         self.model = scene.finalize()
 
         flags = self.model.shape_flags.numpy()
-        for si in (ped_idx, box_liner_idx):          # keep the TABLE visible (erasers read on it)
+        for si in (box_liner_idx,):                  # keep the table + mobile base VISIBLE
             flags[si] &= ~int(newton.ShapeFlags.VISIBLE)
         self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
 
