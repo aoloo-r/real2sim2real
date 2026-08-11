@@ -51,8 +51,8 @@ GRAVITY = -981.0
 TABLE_TOP = 20.0        # table top plane z (cm) — matches newton_fold's keyframe z-convention
 CLOTH_TOP = TABLE_TOP + 1.0
 CELL = 2.0              # cloth grid cell (cm)
-ROBOT_Z = 46.0                    # UR5e mount height on the MOBILE base (off the table, reaches DOWN)
-ROBOT_BASE_XY = (-14.0, 8.0)      # OFF the table, beside it — the arm is on a mobile manipulator
+ROBOT_Z = 40.0                    # UR5e on a RISER above the table -> reaches DOWN (no table-clipping)
+ROBOT_BASE_XY = (-18.0, 8.0)      # OFF the table, on its mobile base beside it (mobile manipulator)
 
 
 def is_garment(label):
@@ -413,8 +413,8 @@ class PlanExec:
         px, py = self._place_xy(nm)
         q = DOWN_Q
         ZHI = 42.0
-        zgrab = TABLE_TOP + 2.0 * self.rigid_hz + 0.5      # fingertip on top of the eraser
-        zdrop = TABLE_TOP + 2.0 * self.rigid_hz + 1.0
+        zgrab = TABLE_TOP + self.rigid_hz + 0.2            # pads AROUND the eraser body (not above it)
+        zdrop = TABLE_TOP + self.rigid_hz + 1.5
         poses = [
             [1.5, rx, ry, ZHI, *q, OPEN],
             [1.2, rx, ry, zgrab, *q, OPEN],
