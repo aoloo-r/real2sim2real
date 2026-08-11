@@ -763,8 +763,10 @@ class PlanExec:
         r = getattr(v, "renderer", None)
         if r is not None:
             try:
-                r.sky_upper = (0.52, 0.53, 0.55)      # MODERATE neutral grey (not blue, not white-wash)
-                r.sky_lower = (0.30, 0.31, 0.33)      # darker grey ground -> objects keep contrast
+                r.draw_sky = False                    # solid background (the sky dome blended as a
+                #                                       grey haze over the scene -> washed out)
+                r.sky_upper = (0.55, 0.57, 0.60)      # still used for ambient light (neutral grey)
+                r.sky_lower = (0.32, 0.33, 0.35)
                 r._light_color = (1.0, 1.0, 0.97)
             except Exception:
                 pass
