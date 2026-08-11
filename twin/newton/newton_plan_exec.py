@@ -167,26 +167,15 @@ class PlanExec:
         self.bodies_per_world = scene.body_count
         print(f"[plan] UR5e + 2F-85: wrist3 {ur_w3}, {n_arm} arm dof, pinch {tuple(pinch_local)}", flush=True)
 
-        # REAL RGBD ARRANGEMENT, translated to reach: keep every object at its real reconstructed
-        # position (so the scene matches the RGBD photo) but shift the WHOLE cluster toward the robot
-        # by a SINGLE translation, so the far box comes within the UR5e's reach. A pure translation
-        # preserves the relative layout — unlike cuTAMP's compressed frame, which scrambled it.
-        bf_pose = self.plan_statics.get("box_floor", {}).get("pose", [0.271, 0.076, 0.0])
+        # PLAN-DRIVEN positions: place every object EXACTLY where the cuTAMP plan JSON says. The plan
+        # is now generated on the REAL layout (translated only for reach — see run_scene_tamp), so the
+        # JSON positions already match the RGBD AND are reachable, and what executes == the JSON.
+        # Real shapes (cloth_from_mask garments, real eraser meshes, real box mesh) sit at those poses.
+        bf_pose = self.plan_statics.get("box_floor", {}).get("pose", [0.55, 0.30, 0.0])
+        bfx, bfy = float(bf_pose[0]) * M2CM, float(bf_pose[1]) * M2CM
         self.plan_box_center = np.array(bf_pose[:2])
-        bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)     # real box (cm, base at TABLE_TOP)
-        zt, zb = bv[:, 2].max(), bv[:, 2].min()
-        rim0 = bv[bv[:, 2] > zt - 0.30 * (zt - zb)]
-        far = np.array([float(rim0[:, 0].mean()), float(rim0[:, 1].mean())])  # real box opening = farthest
-        far_r = float(np.linalg.norm(far))
-        REACH_SAFE = 72.0
-        self.frame_delta = far * (REACH_SAFE / far_r - 1.0) if far_r > REACH_SAFE else np.zeros(2)
-        dx, dy = float(self.frame_delta[0]), float(self.frame_delta[1])
-        print(f"[plan] REAL frame shifted toward robot by ({dx:.0f},{dy:.0f})cm "
-              f"(box {far_r:.0f}->{REACH_SAFE:.0f}cm; layout preserved)", flush=True)
-
-        real_xy = {norm_label(r["label"]): (r["x"] * M2CM + dx, r["y"] * M2CM + dy) for r in real}
-        bopen = (far[0] + dx, far[1] + dy)
-        allxy = np.array(list(real_xy.values()) + [list(bopen)])
+        plan_xy = {norm_label(k): (float(v[0]) * M2CM, float(v[1]) * M2CM) for k, v in self.initial.items()}
+        allxy = np.array(list(plan_xy.values()) + [[bfx, bfy]])
         self.tcx, self.tcy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
         thx = float(np.ptp(allxy[:, 0])) / 2 + 22.0
         thy = float(np.ptp(allxy[:, 1])) / 2 + 22.0
@@ -200,8 +189,12 @@ class PlanExec:
         scene.add_shape_box(-1, wp.transform(wp.vec3(0.0, 0.0, ROBOT_Z / 2), wp.quat_identity()),
                             hx=14.0, hy=14.0, hz=ROBOT_Z / 2, cfg=cfg)
 
-        # box mesh shifted; open-top collision liner (hidden) + visible real mesh
-        bv[:, 0] += dx; bv[:, 1] += dy
+        # real box mesh placed so its opening centres on the plan box_floor
+        bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)
+        zt, zb = bv[:, 2].max(), bv[:, 2].min()
+        rim0 = bv[bv[:, 2] > zt - 0.30 * (zt - zb)]
+        bv[:, 0] += bfx - float(rim0[:, 0].mean())
+        bv[:, 1] += bfy - float(rim0[:, 1].mean())
         keep = bv[bf].mean(1)[:, 2] < zb + 0.82 * (zt - zb)
         liner = newton.Mesh(bv, bf[keep].reshape(-1))
         box_liner_idx = scene.shape_count
@@ -209,7 +202,7 @@ class PlanExec:
         box_viz = newton.Mesh(bv, bf.reshape(-1))
         scene.add_shape_mesh(-1, wp.transform(wp.vec3(0.0), wp.quat_identity()), mesh=box_viz,
                              cfg=ModelBuilder.ShapeConfig(has_shape_collision=False), color=wp.vec3(*bcol))
-        self.box_open = (bopen[0], bopen[1], float(zt))
+        self.box_open = (bfx, bfy, float(zt))
         self.box_hw = (float(np.ptp(bv[:, 0])) / 2.0, float(np.ptp(bv[:, 1])) / 2.0)
         self.box_floor_z = float(zb)
 
@@ -229,7 +222,9 @@ class PlanExec:
             v, faces, uvs, _tex = cloth_from_mask(sp["mask_path"], self.capture_dir,
                                                   step=self.mask_step, base_frame=args.base_frame)
             v = v.astype(np.float64)
-            v[:, 0] += dx; v[:, 1] += dy                 # keep the REAL shape+position; just shift cluster
+            gx, gy = plan_xy[norm_label(nm)]             # place the real garment shape AT its plan pose
+            v[:, 0] += gx - v[:, 0].mean()
+            v[:, 1] += gy - v[:, 1].mean()
             v[:, 2] += CLOTH_TOP - v[:, 2].min()         # lie flat on the table
             faces = faces.reshape(-1, 3).astype(np.int32)
             n = len(v)
@@ -260,7 +255,7 @@ class PlanExec:
             if r is None:
                 continue
             nm = norm_label(plan_nm)
-            rx, ry = r["x"] * M2CM + dx, r["y"] * M2CM + dy
+            rx, ry = plan_xy[nm]                          # real eraser MESH placed at its plan pose
             hz = max(1.0, float(r.get("height", 0.03)) * M2CM * 0.5)
             self.rigid_hz = hz
             b = scene.add_body(xform=wp.transform(wp.vec3(rx, ry, TABLE_TOP + hz), wp.quat_identity()), label=nm)

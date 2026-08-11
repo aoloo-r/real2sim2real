@@ -48,7 +48,7 @@ default_constraint_to_mult[StablePlacement.type][f"{_STAGING}_in_xy"] = 2.0
 default_constraint_to_mult[StablePlacement.type][f"{_STAGING}_support"] = 2.0
 
 
-def load_real_scene_env(scene_dir, box_cx=0.42, wall_h=0.05,
+def load_real_scene_env(scene_dir, capture_dir, box_cx=0.42, wall_h=0.05,
                         tensor_args=TensorDeviceType()):
     layout = json.load(open(os.path.join(scene_dir, "scene_layout.json")))
     objs = {o["id"]: o for o in layout["objects"]}
@@ -76,31 +76,30 @@ def load_real_scene_env(scene_dir, box_cx=0.42, wall_h=0.05,
     rigid_os = [o for o in layout["objects"]
                 if o is not box_o and not has_kw(o, GARMENT_KW)]
 
-    # map image-plane layout -> table plane at NATURAL spacing (so big flat garments don't
-    # overlap), then TRANSLATE the whole cluster toward the robot so the farthest grasp is
-    # within the Panda's comfortable radius. Translation preserves relative spacing (no new
-    # overlaps), unlike radial clamping which collapses objects together.
-    REACH_R = 0.60
-    cxs = [px_center(o)[0] for o in layout["objects"]]
-    cys = [px_center(o)[1] for o in layout["objects"]]
-    span = max(max(cxs) - min(cxs), max(cys) - min(cys))
-    scale = 0.46 / max(1.0, span)                 # natural cluster spans ~0.46m
-    bx_px = px_center(box_o)
+    # REAL base-frame positions — the SAME reconstruction the executor uses (T_base_cam @
+    # position_cam) — then TRANSLATE the whole cluster toward the robot so the farthest object
+    # (the box) sits at REACH_R. A PURE translation preserves the real RGBD arrangement (no
+    # compression) so the plan matches the real scene AND is reachable. (The old pixel-projection
+    # scaled the layout to 0.46m, which squashed it and made the JSON not match the RGBD.)
+    import numpy as _np
+    _ex = json.load(open(os.path.join(capture_dir, "extrinsics.json")))
+    _T = _np.array(_ex["transforms"]["ur5e_base_link"]["T_base_cam"], float)
 
-    def raw_xy(o):
-        px, py = px_center(o)
-        return (box_cx + (py - bx_px[1]) * scale, 0.06 - (px - bx_px[0]) * scale)
+    def real_xy(o):
+        pc = o["depth_info"]["position_cam"]
+        P = _T @ _np.array([pc[0], pc[1], pc[2], 1.0])
+        return float(P[0]), float(P[1])
 
-    # shift the cluster so its farthest point sits at REACH_R (bring far objects into reach)
-    raws = [raw_xy(o) for o in layout["objects"]]
-    ccx = sum(r[0] for r in raws) / len(raws); ccy = sum(r[1] for r in raws) / len(raws)
-    max_r = max((x * x + y * y) ** 0.5 for x, y in raws)
-    shift = max(0.0, max_r - REACH_R)
-    d = (ccx * ccx + ccy * ccy) ** 0.5 or 1.0
-    sx_, sy_ = -shift * ccx / d, -shift * ccy / d   # translate toward origin along cluster dir
+    REACH_R = 0.70
+    fx, fy = real_xy(box_o)                         # box = farthest; shift it to within reach
+    far_r = (fx * fx + fy * fy) ** 0.5 or 1.0
+    shift = max(0.0, far_r - REACH_R)
+    sx_, sy_ = -shift * fx / far_r, -shift * fy / far_r
+    print(f"[scene_tamp] REAL layout, translated toward robot by "
+          f"({sx_*100:.0f},{sy_*100:.0f})cm (box {far_r*100:.0f}->{REACH_R*100:.0f}cm)", flush=True)
 
     def table_xy(o):
-        x, y = raw_xy(o)
+        x, y = real_xy(o)
         return x + sx_, y + sy_
 
     table = Cuboid(name="table", dims=[1.1, 1.5, 0.02],
@@ -154,8 +153,8 @@ def load_real_scene_env(scene_dir, box_cx=0.42, wall_h=0.05,
             if not moved:
                 break
         r = (x * x + y * y) ** 0.5             # keep the nudged pose reachable too
-        if r > 0.58:
-            x, y = x * 0.58 / r, y * 0.58 / r
+        if r > 0.72:
+            x, y = x * 0.72 / r, y * 0.72 / r
         return x, y
 
     for gi, o in enumerate(garment_os):
@@ -249,7 +248,7 @@ def main():
         _viz.MockVisualizer.log_mat4x4 = _capture
         args.disable_visualizer = True
 
-    env = load_real_scene_env(args.scene_dir, box_cx=args.box_x, wall_h=args.wall_h)
+    env = load_real_scene_env(args.scene_dir, args.capture_dir, box_cx=args.box_x, wall_h=args.wall_h)
     # capture the winning action SKELETON (cuTAMP's chosen order) for the plan JSON +
     # executor: record each optimized plan's grounded ops keyed by its best cost.
     skeleton_records = []

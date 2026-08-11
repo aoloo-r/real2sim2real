@@ -1,0 +1,266 @@
+{
+  "scene_dir": "/home/aoloo/sam-3d-objects/outputs/robot_20260731_143933",
+  "capture_dir": "/home/aoloo/sam-3d-objects/captures/robot_20260731_143933",
+  "num_satisfying": 0,
+  "certified": false,
+  "skeleton": [
+    "MoveFree(q0, traj1, q1)(q0,traj1,q1)",
+    "Pick(rigid_1, grasp1, q1)(rigid_1,grasp1,q1)",
+    "MoveHolding(rigid_1, grasp1, q1, traj2, q2)(rigid_1,grasp1,q1,traj2,q2)",
+    "Place(rigid_1, grasp1, pose1, box_floor, q2)(rigid_1,grasp1,pose1,box_floor,q2)",
+    "MoveFree(q2, traj3, q3)(q2,traj3,q3)",
+    "Fold(santa_pants, grasp2, q3)(santa_pants,grasp2,q3)",
+    "MoveFree(q3, traj4, q4)(q3,traj4,q4)",
+    "Fold(santa_shirt, grasp3, q4)(santa_shirt,grasp3,q4)",
+    "MoveFree(q4, traj5, q5)(q4,traj5,q5)",
+    "Pick(rigid_2, grasp4, q5)(rigid_2,grasp4,q5)",
+    "MoveHolding(rigid_2, grasp4, q5, traj6, q6)(rigid_2,grasp4,q5,traj6,q6)",
+    "Place(rigid_2, grasp4, pose2, box_floor, q6)(rigid_2,grasp4,pose2,box_floor,q6)",
+    "MoveFree(q6, traj7, q7)(q6,traj7,q7)",
+    "Pick(santa_pants, grasp5, q7)(santa_pants,grasp5,q7)",
+    "MoveHolding(santa_pants, grasp5, q7, traj8, q8)(santa_pants,grasp5,q7,traj8,q8)",
+    "Place(santa_pants, grasp5, pose3, box_floor, q8)(santa_pants,grasp5,pose3,box_floor,q8)",
+    "MoveFree(q8, traj9, q9)(q8,traj9,q9)",
+    "Pick(santa_shirt, grasp6, q9)(santa_shirt,grasp6,q9)",
+    "MoveHolding(santa_shirt, grasp6, q9, traj10, q10)(santa_shirt,grasp6,q9,traj10,q10)",
+    "Place(santa_shirt, grasp6, pose4, box_floor, q10)(santa_shirt,grasp6,pose4,box_floor,q10)"
+  ],
+  "foldables": {
+    "santa_pants": [
+      0.03,
+      0.03,
+      0.13
+    ],
+    "santa_shirt": [
+      0.03,
+      0.03,
+      0.12
+    ]
+  },
+  "bundles_m": {
+    "santa_pants": [
+      0.1,
+      0.1,
+      0.11
+    ],
+    "santa_shirt": [
+      0.1,
+      0.1,
+      0.1
+    ]
+  },
+  "initial": {
+    "santa_shirt": [
+      0.4154,
+      0.1315,
+      0.128,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "santa_pants": [
+      0.4747,
+      -0.1817,
+      0.1065,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rigid_1": [
+      0.171,
+      0.1492,
+      0.092,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rigid_2": [
+      0.2358,
+      -0.0198,
+      0.092,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "statics": {
+    "table": {
+      "pose": [
+        0.15,
+        0.0,
+        -0.011,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        1.1,
+        1.5,
+        0.02
+      ]
+    },
+    "box_floor": {
+      "pose": [
+        0.5657,
+        0.4123,
+        0.005,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        0.2446,
+        0.2192,
+        0.01
+      ]
+    },
+    "wall_1_box_floor": {
+      "pose": [
+        0.5657,
+        0.5279,
+        0.03,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        0.2446,
+        0.012,
+        0.05
+      ]
+    },
+    "wall_2_box_floor": {
+      "pose": [
+        0.5657,
+        0.2967,
+        0.03,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        0.2446,
+        0.02,
+        0.05
+      ]
+    },
+    "wall_3_box_floor": {
+      "pose": [
+        0.4374,
+        0.4123,
+        0.03,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        0.02,
+        0.2192,
+        0.05
+      ]
+    },
+    "wall_4_box_floor": {
+      "pose": [
+        0.694,
+        0.4123,
+        0.03,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        0.02,
+        0.2192,
+        0.05
+      ]
+    },
+    "staging_zone": {
+      "pose": [
+        0.1,
+        -0.4,
+        0.005,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "dims": [
+        0.4,
+        0.4,
+        0.01
+      ]
+    }
+  },
+  "placements": [
+    {
+      "name": "santa_shirt",
+      "is_foldable": true,
+      "pos": [
+        0.5343,
+        0.3698,
+        0.1518
+      ],
+      "quat_wxyz": [
+        0.9639,
+        0.0,
+        0.0,
+        0.2663
+      ]
+    },
+    {
+      "name": "santa_pants",
+      "is_foldable": true,
+      "pos": [
+        0.5148,
+        0.4617,
+        0.1615
+      ],
+      "quat_wxyz": [
+        0.9689,
+        0.0,
+        0.0,
+        0.2473
+      ]
+    },
+    {
+      "name": "rigid_1",
+      "is_foldable": false,
+      "pos": [
+        0.6022,
+        0.4031,
+        0.0875
+      ],
+      "quat_wxyz": [
+        0.1047,
+        0.0,
+        0.0,
+        0.9945
+      ]
+    },
+    {
+      "name": "rigid_2",
+      "is_foldable": false,
+      "pos": [
+        0.6313,
+        0.34,
+        0.0865
+      ],
+      "quat_wxyz": [
+        0.9789,
+        0.0,
+        0.0,
+        0.2045
+      ]
+    }
+  ]
+}
