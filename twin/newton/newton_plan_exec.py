@@ -177,8 +177,8 @@ class PlanExec:
         plan_xy = {norm_label(k): (float(v[0]) * M2CM, float(v[1]) * M2CM) for k, v in self.initial.items()}
         allxy = np.array(list(plan_xy.values()) + [[bfx, bfy]])
         self.tcx, self.tcy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
-        thx = float(np.ptp(allxy[:, 0])) / 2 + 22.0
-        thy = float(np.ptp(allxy[:, 1])) / 2 + 22.0
+        thx = float(np.ptp(allxy[:, 0])) / 2 + 32.0        # generous margin so nothing drapes off
+        thy = float(np.ptp(allxy[:, 1])) / 2 + 32.0
         self.table_hz = 10.0
         self.table_top = TABLE_TOP
         tbl_idx = scene.shape_count
@@ -675,6 +675,7 @@ class PlanExec:
             bq = st.body_q.numpy()
             bq[spec["body"], :3] = [px, py, pz]
             st.body_q.assign(bq)
+        self.rigid_pose[spec["body"]][:3] = [px, py, pz]     # so render re-stamps the PLACED pose
         self.rigid_grasp = None
         print(f"[plan] PLACE rigid '{spec['name']}' -> ({px:.0f},{py:.0f})cm t={self.sim_time:.1f}s", flush=True)
 
@@ -713,8 +714,10 @@ class PlanExec:
             if self.rigid_grasp is not None:                 # carry the grasped eraser under the EE
                 pinch = self._ee_pinch(self.state_1)
                 bq = self.state_1.body_q.numpy()
-                bq[self.rigid_grasp["body"], :3] = pinch + self.rigid_grasp["off"]
+                newp = pinch + self.rigid_grasp["off"]
+                bq[self.rigid_grasp["body"], :3] = newp
                 self.state_1.body_q.assign(bq)
+                self.rigid_pose[self.rigid_grasp["body"]][:3] = newp   # render follows the carry
             if self.grasp_active and self.pin_idx is not None:
                 wp.launch(pin_to_ee, dim=len(self.pin_idx),
                           inputs=[self.state_1.body_q, self.endeffector_id, self.ee_off_vec,
