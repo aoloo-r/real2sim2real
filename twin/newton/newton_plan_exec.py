@@ -51,7 +51,8 @@ GRAVITY = -981.0
 TABLE_TOP = 20.0        # table top plane z (cm) — matches newton_fold's keyframe z-convention
 CLOTH_TOP = TABLE_TOP + 1.0
 CELL = 2.0              # cloth grid cell (cm)
-ROBOT_Z = 25.0
+ROBOT_Z = 34.0                    # base raised on a pedestal so the arm reaches DOWN to the table
+ROBOT_BASE_XY = (-10.0, -6.0)     # mounted BACK from the objects so the arm extends (not cramped)
 
 
 def is_garment(label):
@@ -153,7 +154,7 @@ class PlanExec:
         cfg = ModelBuilder.ShapeConfig(mu=0.6)
 
         # --- robot at the base-frame origin, facing +x toward the objects, on a pedestal ---
-        self.robot_base = (0.0, 0.0, ROBOT_Z)
+        self.robot_base = (ROBOT_BASE_XY[0], ROBOT_BASE_XY[1], ROBOT_Z)
         ur_w3, dof0, n_arm, pinch_local = add_ur5e_gripper(
             scene, wp.transform(wp.vec3(*self.robot_base), wp.quat_identity()), scale=100.0)
         self.n_arm = n_arm
@@ -186,8 +187,8 @@ class PlanExec:
         scene.add_shape_box(-1, wp.transform(wp.vec3(self.tcx, self.tcy, TABLE_TOP - 10.0), wp.quat_identity()),
                             hx=thx, hy=thy, hz=10.0, cfg=cfg, color=wp.vec3(0.80, 0.80, 0.82))
         ped_idx = scene.shape_count
-        scene.add_shape_box(-1, wp.transform(wp.vec3(0.0, 0.0, ROBOT_Z / 2), wp.quat_identity()),
-                            hx=14.0, hy=14.0, hz=ROBOT_Z / 2, cfg=cfg)
+        scene.add_shape_box(-1, wp.transform(wp.vec3(ROBOT_BASE_XY[0], ROBOT_BASE_XY[1], ROBOT_Z / 2),
+                                             wp.quat_identity()), hx=14.0, hy=14.0, hz=ROBOT_Z / 2, cfg=cfg)
 
         # real box mesh placed so its opening centres on the plan box_floor
         bv, bf, bcol = load_box_mesh_cm(args.scene_dir, args.capture_dir)
@@ -345,11 +346,14 @@ class PlanExec:
         q = DOWN_Q
         ZHI = 40.0
         p0, n = g["p0"], g["n"]
+        qx = (cx + x1) / 2.0                          # quarter line of the final +x,+y quadrant
         folds = [
             # fold the -x half over the +x half: grasp the x=x0 edge, hinge over cx, lay at x1
             {"axis": "x", "edge": x0, "to": x1, "hinge": cx, "along": (y0, y1), "mid": cy},
             # fold the -y half over the +y half (of the now half-width garment): grasp y=y0 edge
             {"axis": "y", "edge": y0, "to": y1, "hinge": cy, "along": (cx, x1), "mid": (cx + x1) / 2.0},
+            # THIRD fold (tighter -> ~eighths, fits the box): fold the quarter in half along x again
+            {"axis": "x", "edge": cx, "to": x1, "hinge": qx, "along": (cy, y1), "mid": (cy + y1) / 2.0},
         ]
         poses, specs, adaptive = [], {}, set()
         for i, f in enumerate(folds):
@@ -798,7 +802,7 @@ def main():
     ap.add_argument("--base_frame", default="ur5e_base_link")
     ap.add_argument("--substeps", type=int, default=8)
     ap.add_argument("--vbd_iters", type=int, default=10)
-    ap.add_argument("--reach", type=float, default=82.0)
+    ap.add_argument("--reach", type=float, default=86.0, help="EE reach clamp (cm) from the base")
     ap.add_argument("--mask_step", type=int, default=9, help="cloth_from_mask sampling stride (px); smaller = finer/more realistic, more particles")
     ap.add_argument("--cell", type=float, default=2.0, help="[unused: legacy grid] cloth grid cell (cm)")
     ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH stiffness (deformable)")
