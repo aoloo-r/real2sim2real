@@ -51,7 +51,7 @@ GRAVITY = -981.0
 TABLE_TOP = 20.0        # table top plane z (cm) — matches newton_fold's keyframe z-convention
 CLOTH_TOP = TABLE_TOP + 1.0
 CELL = 2.0              # cloth grid cell (cm)
-ROBOT_Z = 40.0                    # UR5e on a RISER above the table -> reaches DOWN (no table-clipping)
+ROBOT_Z = 20.0                    # UR5e base at TABLE LEVEL (per user) — mobile-base top flush w/ table
 ROBOT_BASE_XY = (-18.0, 8.0)      # OFF the table, on its mobile base beside it (mobile manipulator)
 
 
@@ -758,6 +758,16 @@ class PlanExec:
         v = self.viewer
         v.set_model(self.model)
         v.show_triangles = False; v.show_particles = False
+        # kill the strong BLUE sky tint (default sky_upper is blue -> washes the whole scene blue,
+        # worse when zoomed): use a neutral, bright studio ambient + white light.
+        r = getattr(v, "renderer", None)
+        if r is not None:
+            try:
+                r.sky_upper = (0.52, 0.53, 0.55)      # MODERATE neutral grey (not blue, not white-wash)
+                r.sky_lower = (0.30, 0.31, 0.33)      # darker grey ground -> objects keep contrast
+                r._light_color = (1.0, 1.0, 0.97)
+            except Exception:
+                pass
         self.tex_img = load_texture(os.path.join(self.capture_dir, "rgb.png"))
         self.g_uv = {k: wp.array(g["uvs"].astype(np.float32), dtype=wp.vec2) for k, g in self.garments.items()}
         self.g_fc = {k: wp.array(g["faces"].astype(np.int32), dtype=wp.int32) for k, g in self.garments.items()}
