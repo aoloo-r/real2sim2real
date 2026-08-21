@@ -51,6 +51,10 @@ _FOLD_MODE = _os.environ.get('TWIN_FOLD', 'assist')
 # 1.0 catches the corner but closes THROUGH the cloth and wedges it between the jaws, so the
 # sheet rides the gripper instead of dropping on release; 0.0 misses the first grasp entirely.
 _GRASP_DZ = float(_os.environ.get('TWIN_GRASP_DZ_CM', '0.5'))
+# TWIN_FOLD_STYLE=shirt folds the FLAT sheet in three deterministic moves (left panel, right
+# panel, then in half), skipping the stock 5-corner choreography which crumples first and needs
+# extra halvings afterwards. 'stock' keeps the original behaviour.
+_FOLD_STYLE = _os.environ.get('TWIN_FOLD_STYLE', 'shirt')
 
 
 def _measured_from_capture(ts):
@@ -701,6 +705,11 @@ class Example:
             self.robot_key_poses[:, 1] *= -1.0   # x
             self.robot_key_poses[:, 5] *= -1.0   # qy
             self.robot_key_poses[:, 6] *= -1.0   # qz
+        if _FOLD_STYLE == "shirt":
+            # keep only the opening "descend to working height" pose; the three garment folds
+            # are generated from the flat sheet instead of the stock corner-dragging sequence
+            self.robot_key_poses = self.robot_key_poses[:1]
+
         if _GRASP_DZ:
             _z = self.robot_key_poses[:, 3]
             _z[_z <= 21.0] -= _GRASP_DZ            # grasp heights only; lifts/drags untouched
@@ -791,6 +800,8 @@ class Example:
         return float(p[0]), float(p[1]), float(p[2])
 
     def _append_poses(self, poses):
+        if not poses:                       # e.g. unfold with nothing left on the stack
+            return
         rows = []
         for d, x, y, z, g in poses:
             x, y, z = self._clamp_reach(x, y, z)
@@ -800,21 +811,56 @@ class Example:
         self.transition_duration = np.concatenate([self.transition_duration, arr[:, 0]])
         self.robot_key_poses_time = np.cumsum(self.transition_duration)
 
+    def _shirt_folds(self):
+        """Three-move garment fold on the flat sheet: left panel in, right panel in, in half.
+
+        Lines come from the sheet's ORIGINAL bbox, captured once, so the panels are true
+        thirds rather than thirds of whatever the previous fold produced.
+        """
+        if getattr(self, "_sheet", None) is None:
+            lo, hi = self._cloth_bbox()
+            self._sheet = (lo.copy(), hi.copy())
+            print(f"[twin-stock] flat sheet {hi[0] - lo[0]:.0f}x{hi[1] - lo[1]:.0f}cm", flush=True)
+        lo, hi = self._sheet
+        cx, cy = (lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0
+        w = hi[0] - lo[0]
+        i = getattr(self, "_shirt_step", 0)
+        self._shirt_step = i + 1
+        if i == 0:                                     # left panel over onto the body
+            axis, line = 0, lo[0] + w / 3.0
+            grab, drop = (lo[0] + 3.0, cy), (2.0 * line - (lo[0] + 3.0), cy)
+        elif i == 1:                                   # right panel over onto the body
+            axis, line = 0, hi[0] - w / 3.0
+            grab, drop = (hi[0] - 3.0, cy), (2.0 * line - (hi[0] - 3.0), cy)
+        else:                                          # hem up to the collar
+            axis, line = 1, cy
+            grab, drop = (cx, hi[1] - 3.0), (cx, 2.0 * line - (hi[1] - 3.0))
+        return self._mirror_fold_poses(axis, float(line), grab, drop)
+
     def _fold_poses(self):
         """Halve the bundle across its longer axis."""
         lo, hi = self._cloth_bbox()
         cx, cy = (lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0
         sx, sy = hi[0] - lo[0], hi[1] - lo[1]
-        top = self.TABLE_TOP
         if sy >= sx:                                   # carry the +y edge over to -y
             grab, drop = (cx, hi[1] - 0.03 * sy), (cx, lo[1] + 0.18 * sy)
             axis, line = 1, cy
         else:
             grab, drop = (hi[0] - 0.03 * sx, cy), (lo[0] + 0.18 * sx, cy)
             axis, line = 0, cx
+        return self._mirror_fold_poses(axis, float(line), grab, drop)
+
+    def _mirror_fold_poses(self, axis, line, grab, drop):
+        """Gripper waypoints for mirroring the piece beyond `line` back across it."""
+        top = self.TABLE_TOP
         # the half beyond the fold line is what gets carried over onto the other half
         self._fold = {"axis": axis, "line": float(line), "grab": np.array(grab, float),
                       "drop": np.array(drop, float), "start": None, "idx": None}
+        # keep the fold on a stack so it can be undone: mirroring a half across a line is its
+        # own inverse, so replaying the same line with grab/drop swapped unfolds it
+        self._fold_stack = getattr(self, "_fold_stack", [])
+        self._fold_stack.append({"axis": axis, "line": float(line),
+                                 "grab": np.array(grab, float), "drop": np.array(drop, float)})
         # Follow the stock fold's motion: pinch at table level, then DRAG low (~11cm up).
         # A high lifting arc just slips the fabric out of the fingers.
         _lerp = lambda t: (grab[0] + (drop[0] - grab[0]) * t, grab[1] + (drop[1] - grab[1]) * t)
@@ -824,6 +870,30 @@ class Example:
             (2.5, grab[0], grab[1], top - 0.3 - _GRASP_DZ, self.GRIP_CLOSE),
             (2.0, *_lerp(0.15), top + 4.0, self.GRIP_CLOSE),
             (2.5, *_lerp(0.5), top + 8.0, self.GRIP_CLOSE),       # drag low: height sheds the grip
+            (3.0, drop[0], drop[1], top + 8.0, self.GRIP_CLOSE),
+            (1.0, drop[0], drop[1], top + 8.0, self.GRIP_OPEN),
+            (1.5, drop[0], drop[1], top + 20.0, self.GRIP_OPEN),
+        ]
+
+    def _unfold_poses(self):
+        """Undo the most recent fold: carry the folded half back across its own fold line."""
+        stack = getattr(self, "_fold_stack", [])
+        if not stack:
+            print("[twin-stock] nothing left to unfold", flush=True)
+            return []
+        rec = stack.pop()
+        grab, drop = rec["drop"], rec["grab"]          # reversed: pick up where the edge landed
+        top = self.TABLE_TOP
+        self._fold = {"axis": rec["axis"], "line": rec["line"],
+                      "grab": np.array(grab, float), "drop": np.array(drop, float),
+                      "start": None, "idx": rec.get("idx")}
+        _lerp = lambda t: (grab[0] + (drop[0] - grab[0]) * t, grab[1] + (drop[1] - grab[1]) * t)
+        return [
+            (2.0, grab[0], grab[1], top + 11.0, self.GRIP_OPEN),
+            (2.0, grab[0], grab[1], top - 0.3 - _GRASP_DZ, self.GRIP_OPEN),
+            (2.5, grab[0], grab[1], top - 0.3 - _GRASP_DZ, self.GRIP_CLOSE),
+            (2.0, *_lerp(0.15), top + 4.0, self.GRIP_CLOSE),
+            (2.5, *_lerp(0.5), top + 8.0, self.GRIP_CLOSE),
             (3.0, drop[0], drop[1], top + 8.0, self.GRIP_CLOSE),
             (1.0, drop[0], drop[1], top + 8.0, self.GRIP_OPEN),
             (1.5, drop[0], drop[1], top + 20.0, self.GRIP_OPEN),
@@ -854,9 +924,20 @@ class Example:
         """Queue the next phase when the current pose list runs out."""
         # Physical folds only shrink the bundle 10-15% per pass and misfire often, so it takes
         # several passes to bring it near the box's 24x25cm interior. Kept frictional on purpose.
-        # assisted folds genuinely halve, so three passes take 54cm -> ~27 -> ~14
-        stages = (("fold 2", self._fold_poses), ("fold 3", self._fold_poses),
-                  ("fold 4", self._fold_poses), ("pack into box", self._pack_poses))
+        if _FOLD_STYLE == "shirt":
+            # left panel in, right panel in, hem to collar -> a folded rectangle in 3 moves
+            stages = [("fold 1 left panel", self._shirt_folds),
+                      ("fold 2 right panel", self._shirt_folds),
+                      ("fold 3 in half", self._shirt_folds)]
+            if _os.environ.get("TWIN_UNFOLD", "1") == "1":
+                stages += [("unfold 1", self._unfold_poses), ("unfold 2", self._unfold_poses),
+                           ("unfold 3", self._unfold_poses)]
+        else:
+            stages = [("fold 2", self._fold_poses), ("fold 3", self._fold_poses),
+                      ("unfold 1", self._unfold_poses), ("unfold 2", self._unfold_poses)]
+        if _os.environ.get("TWIN_PACK", "0") == "1":
+            stages.append(("pack into box", self._pack_poses))
+        stages = tuple(stages)
         i = getattr(self, "_plan_stage", 0)
         if i >= len(stages):
             return False
@@ -959,7 +1040,10 @@ class Example:
         if _FOLD_MODE != "assist" or f is None or self.target is None:
             return
         if float(self.target[-1]) > self.GRIP_CLOSE + 1e-3:          # jaws open -> let go
-            if f["idx"] is not None:
+            # `start is None` means the carry has not begun: an unfold arrives with its particle
+            # set preset and its first two poses OPEN, so releasing here would wipe that set and
+            # send the close back to side-selection (which grabs the whole bundle).
+            if f["idx"] is not None and f["start"] is not None:
                 qd = self.state_0.particle_qd.numpy()
                 qd[f["idx"]] = 0.0
                 self.state_0.particle_qd.assign(qd)
@@ -975,7 +1059,15 @@ class Example:
             if len(idx) == 0:
                 return
             f["idx"], f["start"] = idx, q[idx].copy()
+            if self._fold_stack:                      # remember WHICH half this fold moved
+                self._fold_stack[-1]["idx"] = idx
             print(f"[twin-stock] fold carries {len(idx)} particles across the line", flush=True)
+        elif f["start"] is None:
+            # unfold: the set is preset from the fold being reversed. Re-selecting by side is
+            # wrong here - after a fold the WHOLE bundle lies on one side of the line, so a
+            # side test grabs all 6436 particles and flips the bundle instead of unfolding it.
+            f["start"] = q[f["idx"]].copy()
+            print(f"[twin-stock] unfold returns {len(f['idx'])} particles", flush=True)
 
         span = f["drop"] - f["grab"]
         denom = float(span @ span)
