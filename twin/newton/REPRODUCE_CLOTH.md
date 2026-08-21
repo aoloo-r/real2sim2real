@@ -1,9 +1,10 @@
 # Reproducing the cloth folding run
 
-Everything below runs on a single RTX 4090. The cloth simulation is Newton's own
-`cloth_franka` example; our script is a modified copy of it.
+The run in the video is Newton's own `cloth_franka` example. Nothing of ours is
+needed to reproduce it — start at §2. Our modified copy is described in §4 only
+in case it is useful for comparison.
 
-## Environment
+## 1. Environment
 
 | | |
 |---|---|
@@ -19,16 +20,66 @@ conda activate newton-1.5
 pip install newton==1.5.0        # pulls warp 1.16.0
 ```
 
-## 1. Upstream baseline (no code of ours)
-
-This is the stock example our script is derived from. Start here — if the
-behaviour of interest shows up already, nothing of ours is involved:
+## 2. The reproduction
 
 ```bash
 python -m newton.examples cloth_franka
 ```
 
-## 2. Our script
+That is the whole repro. The example folds `unisex_shirt.usd` with a Franka using
+its own 33-pose choreography; the scene runs in centimetre units.
+
+## 3. What we observe
+
+**The corner grasps close above the cloth rather than on it.** The grasp poses sit
+at `z = 20.0`, which is exactly the table top, so the jaws meet at the surface
+with the fabric alongside rather than between them. The drag that follows then
+moves little or no cloth, and the shirt ends up crumpled rather than folded.
+
+Source of the poses — `newton/examples/cloth/example_cloth_franka.py`, the
+`robot_key_poses` table starting at **line 391**:
+
+```python
+# top left
+[2, 31.0, -60.0, 20.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_open_activation_val],
+[2, 31.0, -60.0, 20.0, 0.8536, -0.3536, 0.3536, -0.1464, clamp_close_activation_val],
+```
+
+**Evidence that the grasp is the cause.** Lowering only the grasp-height poses —
+every row whose `z <= 21`, leaving the 26–40 cm lift and drag heights untouched —
+changes the outcome of the example's own fold sequence:
+
+| grasp height | shirt after the stock 5-corner fold |
+|---|---|
+| `z = 20.0` (as shipped) | 25 x 54 cm — barely folded |
+| `z = 19.0` (−1.0 cm) | **26 x 31 cm** — genuinely folded |
+
+Same choreography, same cloth, same solver settings; only the grasp depth
+differs. At −1.0 cm there is a second effect worth knowing about: the jaws then
+close *through* the fabric and it rides the gripper on release instead of
+dropping. −0.5 cm catches the cloth without wedging it, and is what we settled on.
+
+A one-line way to try it, applied after the table is built:
+
+```python
+z = self.robot_key_poses[:, 3]
+z[z <= 21.0] -= 0.5     # grasp heights only; lifts and drags untouched
+```
+
+**Second observation — frictional folding plateaus.** Repeated fold passes stop
+making progress:
+
+```
+54 -> 49 -> 45 -> 46 -> 45 -> 44 cm      (six passes)
+```
+
+After two folds the pile is roughly 2 cm of layered fabric and a parallel jaw at
+table level only catches the top layer: the drag peels that layer and the pile
+springs back. Related: a grasped bundle cannot be lifted at all — the arm arrives
+at the target empty every time, so carrying the folded shirt anywhere needs a
+kinematic attachment rather than a frictional grasp.
+
+## 4. Our modified copy (optional, for comparison only)
 
 | | |
 |---|---|
@@ -37,76 +88,21 @@ python -m newton.examples cloth_franka
 | file | `twin/newton/twin_stockfold.py` |
 
 ```bash
-git clone https://github.com/aoloo-r/real2sim2real
-cd real2sim2real/twin/newton
 DISPLAY=:1 TWIN_PLACE=stock python twin_stockfold.py --viewer gl
 ```
 
-`TWIN_PLACE=stock` is the important flag: it keeps the example's own scene layout
-and needs **no** data from us. Without it the script expects an RGBD capture and
-SAM 3D reconstruction that only exist on our machine. The reconstructed box is
-loaded inside a `try`, so its absence just prints `box skipped` and the run
-continues — verified on a clean path.
-
-Console output is one line per phase, e.g.
-
-```
-[twin-stock] flat sheet 55x60cm
-[twin-stock] t=4s  phase 'fold 1 left panel'  queued (cloth 55x60cm)
-[twin-stock] fold carries 2123 particles across the line
-[twin-stock] t=21s phase 'fold 2 right panel' queued (cloth 36x60cm)
-```
-
-## 3. What we changed relative to the stock example
-
-The cloth itself is untouched: same `unisex_shirt.usd`, same `add_cloth_mesh`
-call, same solver settings. Our changes are the choreography around it.
-
-- **Fold style** (`TWIN_FOLD_STYLE`, default `shirt`) — three garment folds on the
-  flat shirt (left panel at 1/3 width, right panel at 2/3, hem to collar), instead
-  of the stock 5-corner sequence. `TWIN_FOLD_STYLE=stock` restores the original.
-- **Grasp depth** (`TWIN_GRASP_DZ_CM`, default `0.5`) — every grasp closes 0.5 cm
-  below the authored height. At 0.0 the first corner grasp visibly misses the
-  cloth; at 1.0 the jaws close through it and the fabric rides the gripper on
-  release.
-- **Fold assist** (`TWIN_FOLD`, default `assist`) — the half beyond the fold line
-  is pinned and mirrored across it, tracked by how far the gripper has travelled.
-  `TWIN_FOLD=physical` uses purely frictional folding.
-- **Unfold** (`TWIN_UNFOLD=1`) — replays each fold with grab/drop swapped.
-- **Pack** (`TWIN_PACK=1`) — carries the folded bundle into a box (needs capture
-  data; skip for a clean-room repro).
-
-## 4. Why the fold assist exists — the observation worth looking at
-
-Purely frictional folding **plateaus**. Measured over six passes with
-`TWIN_FOLD=physical`:
-
-```
-54 -> 49 -> 45 -> 46 -> 45 -> 44 cm
-```
-
-After two folds the pile is roughly 2 cm of layered fabric, and a parallel jaw
-closing at table level only catches the top layer: the drag peels that layer and
-the pile springs back. Grasping nearer the hem (3% inside the edge instead of 8%)
-and dragging lower (8 cm instead of 11 cm) improved the early passes but not the
-plateau. A single grasped bundle also cannot be lifted — the arm arrives at the
-target empty every time — which is why the carry is kinematic rather than
-frictional.
-
-To watch this directly:
-
-```bash
-DISPLAY=:1 TWIN_PLACE=stock TWIN_FOLD=physical TWIN_FOLD_STYLE=stock \
-    python twin_stockfold.py --viewer gl
-```
+`TWIN_PLACE=stock` keeps the example's own scene layout and needs no data from
+us. The cloth is untouched relative to upstream — same `unisex_shirt.usd`, same
+`add_cloth_mesh` call, same solver settings; only the choreography differs
+(`TWIN_GRASP_DZ_CM` grasp depth, `TWIN_FOLD_STYLE=shirt` three-move garment fold,
+`TWIN_FOLD=assist|physical`, `TWIN_UNFOLD`, `TWIN_PACK`).
 
 ## 5. Unit-scale note
 
-The scene simulates in **centimetres** and renders in **metres**. Newton's GL
-viewer bakes primitive dimensions at `set_model` time and ignores the later
-`shape_scale` rescale, so any `add_shape_box` we add draws 100x oversized unless
-its `VISIBLE` flag is cleared and it is drawn manually — the table and our
-collision cage both do this. Porting the stock cloth constants into a metre-scale
-scene (gravity -981, `tri_ke` 1e4, `particle_radius` 0.8, URDF `scale=100`) is
-what produced holes and shredding for us earlier; running in the units the
-constants were tuned for fixed it.
+The scene simulates in centimetres and renders in metres. Newton's GL viewer
+bakes primitive dimensions at `set_model` time and ignores the later
+`shape_scale` rescale, so an added `add_shape_box` draws 100x oversized unless
+its `VISIBLE` flag is cleared and it is drawn manually — the example's table
+already does this. Porting the cloth constants into a metre-scale scene
+(gravity -981, `tri_ke` 1e4, `particle_radius` 0.8, URDF `scale=100`) produced
+holes and shredding for us; running in the units they were tuned for fixed it.
