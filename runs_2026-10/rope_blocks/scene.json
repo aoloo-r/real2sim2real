@@ -1,0 +1,10 @@
+{
+ "box": {"inner_cm": [38, 38], "h_cm": 12, "wall_cm": 1.0},
+ "rope": {"length_cm": 200, "diameter_cm": 1.0, "rows": {"centre_x": -12, "half_x": 20}},
+ "rigids": [
+  {"name": "block1", "dims_cm": [10, 6, 4], "start_xy": [32, -48]},
+  {"name": "block2", "dims_cm": [8, 8, 6], "start_xy": [32, -60]},
+  {"name": "block3", "dims_cm": [12, 5, 3], "start_xy": [32, -72]}
+ ],
+ "lift_max_cm": 50
+}

@@ -1,0 +1,28 @@
+Warp DeprecationWarning: warp.config.quiet is deprecated; use warp.config.log_level = warp.LOG_WARNING to suppress the init banner.
+/home/aoloo/real2sim2real/runs_2026-10/rope_sling/../../twin/newton/twin_rope.py:204: DeprecationWarning: Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. Scalar gravity will be removed in a future release.
+  b = ModelBuilder(gravity=-981.0)
+/home/aoloo/real2sim2real/runs_2026-10/rope_sling/../../twin/newton/twin_rope.py:282: DeprecationWarning: The legacy DOF-shaped joint_target_q layout is deprecated for models whose joint coordinate and DOF counts differ (free/ball/distance joints). In a future release joint_target_q will always use the coordinate layout (matching joint_q) and newton.use_coord_layout_targets will be removed. Set newton.use_coord_layout_targets = True before building models and index targets via Model.joint_target_q_start.
+  self.model = b.finalize()
+[usd-rec] recording to fold_best/rope.usd: 28 robot bodies (84 link meshes, 0 boxes), garment 0 tris, 15fps
+[twin-rope] rope 140 cm x 1.0 cm, 56 segments (56 g), box inner 38 cm h 12 at (0,-14); coil R 8.0 at (0.0,-14.0), loop 50.0 cm; device cuda:0
+[twin-rope] t=  4.9s fold_rope: left grasped s=4 cm (on the table) at (-81.3,-52.0,20.5), tip-to-rope 0.20 cm
+[twin-rope] t= 10.0s  wall 20s
+[twin-rope] t= 16.3s fold_rope: right grasped s=4 cm (on the table) at (3.5,-45.6,20.5), tip-to-rope 0.46 cm
+[twin-rope] t= 20.0s  wall 39s
+[twin-rope] t= 22.5s fold_rope: rope doubled; eye tip at (-12.8,-53.0) (segment 28, middle is 28), eye 4.8 cm wide, strands 4.3 cm apart 20 cm from the tip, ends at x 50.3 and 50.1
+[twin-rope] t= 30.0s  wall 57s
+[twin-rope] t= 31.6s pick_place crate (slung): right set it at (5.7,-52.4,25.0), plan (5.7,-52.4), grasp 0.00 cm off centre
+[twin-rope] t= 35.7s ends_over: right pinched two strands (2.2 and 2.1 cm from the jaw centre) at (47.8,-52.5,20.7)
+[twin-rope] t= 40.0s  wall 77s
+[twin-rope] t= 44.5s ends_over: both ends laid over the block, 1.4 cm apart where they cross the top's mid-line; block moved 2.4 cm, tilt 0 deg
+[twin-rope] t= 47.1s eye_on_top: left grasped s=71 cm (on the table) at (-12.6,-52.9,20.5), tip-to-rope 0.20 cm
+[twin-rope] t= 50.0s  wall 96s
+[twin-rope] t= 52.0s eye_on_top: tip at (-1.0,-50.7,30.0), -5.5 cm from the block centre, 1.0 cm above the top; tip spans y -53.1..-48.1, ends there at y -51.560028076171875 and -54.10772705078125 -> both ends under the tip: False; block moved 1.5 cm, tilt 0 deg
+[twin-rope] t= 55.3s hitch_lift: right pinched two strands (1.2 and 1.1 cm from the jaw centre) at (-4.6,-51.3,20.8)
+[twin-rope] t= 60.0s  wall 116s
+[twin-rope] t= 65.2s hitch: block hangs 17.5 cm above where it stood for 3s from ONE hand, tilt up to 44 deg; hand 47 cm above the table
+[twin-rope] t= 70.0s  wall 139s
+[twin-rope] t= 80.0s  wall 158s
+[usd-rec] saved fold_best/rope.usd: 1228 frames (82s of animation) - open in Isaac Sim and press PLAY
+[twin-rope] SLING result: FAIL - hold: lowest 17.5 cm up, tilt up to 44 deg; carry: lowest 17.6 cm up (rim needs 12.5), tilt up to 41 deg; block ends at (-6.3,-13.5,25.3) in box True, tilt 6 deg; rope 100% in the box; 6 grasps, 0 misses, 82s sim / 161s wall; tips closest 27.3 cm, worst IK lag 0.0 cm (61.4, 'right', [-1.4, -50.7, 61.7]), tip inside the block 23 frames, gripper through the rope 130 frames
+[usd-rec] saved fold_best/rope.usd: 1228 frames (82s of animation) - open in Isaac Sim and press PLAY

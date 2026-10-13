@@ -1,0 +1,77 @@
+{
+ "lift_plan_cm": 17.5,
+ "hand_rise_cm": 44.61013895670564,
+ "hold": {
+  "min_lift_cm": 17.5,
+  "max_tilt_deg": 14.1
+ },
+ "carry": {
+  "min_lift_cm": 17.64,
+  "max_tilt_deg": 15.0
+ },
+ "completed": true,
+ "block_xyz": [
+  2.4,
+  -17.92,
+  24.5
+ ],
+ "block_tilt_deg": 0.0,
+ "block_in_box": true,
+ "rope_in_box_frac": 1.0,
+ "grasps": [
+  {
+   "t": 7.85,
+   "tag": "pick_place crate",
+   "hand": "right",
+   "grasp_err_cm": 0.0
+  },
+  {
+   "t": 11.87,
+   "tag": "drape",
+   "hand": "left",
+   "seg": 2,
+   "where": "on the table",
+   "grasp_err_cm": 0.283
+  },
+  {
+   "t": 23.7,
+   "tag": "drape",
+   "hand": "right",
+   "seg": 45,
+   "where": "on the table",
+   "grasp_err_cm": 0.201
+  },
+  {
+   "t": 35.28,
+   "tag": "sling",
+   "hand": "right",
+   "seg": 9,
+   "where": "hanging outside",
+   "grasp_err_cm": 0.282
+  },
+  {
+   "t": 37.85,
+   "tag": "sling",
+   "hand": "left",
+   "seg": 38,
+   "where": "hanging outside",
+   "grasp_err_cm": 0.232
+  }
+ ],
+ "misses": [],
+ "sim_s": 60.9,
+ "wall_s": 101.8,
+ "tip_min_cm": 11.3,
+ "ik_err_max_cm": 33.63,
+ "ik_err_at": [
+  34.7,
+  "right",
+  [
+   5.9,
+   -48.2,
+   29.8
+  ]
+ ],
+ "tip_in_block_frames": 0,
+ "success": true
+}

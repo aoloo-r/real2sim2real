@@ -1,0 +1,82 @@
+{
+ "task": "coil_rope",
+ "scene": {
+  "box": {
+   "inner_cm": [
+    38,
+    38
+   ],
+   "h_cm": 12,
+   "wall_cm": 1.0
+  },
+  "rope": {
+   "length_cm": 260,
+   "diameter_cm": 1.0
+  },
+  "lift_max_cm": 50
+ },
+ "coil": {
+  "radius_cm": 8.5,
+  "loop_cm": 53.41,
+  "loops": 4.87,
+  "stack_cm": 5.0,
+  "centre_dxy": [
+   0.0,
+   -5.5
+  ],
+  "direction": "ccw",
+  "hang_frac": 0.85
+ },
+ "plan": [
+  {
+   "op": "place_end",
+   "s_cm": 0.0,
+   "hand": "left"
+  },
+  {
+   "op": "lay_loop",
+   "s_cm": 53.41,
+   "hand": "right",
+   "arc_cm": 53.41
+  },
+  {
+   "op": "lay_loop",
+   "s_cm": 106.81,
+   "hand": "left",
+   "arc_cm": 53.41
+  },
+  {
+   "op": "lay_loop",
+   "s_cm": 160.22,
+   "hand": "right",
+   "arc_cm": 53.41
+  },
+  {
+   "op": "lay_loop",
+   "s_cm": 213.63,
+   "hand": "left",
+   "arc_cm": 53.41
+  },
+  {
+   "op": "lay_loop",
+   "s_cm": 258.0,
+   "hand": "right",
+   "arc_cm": 44.37
+  }
+ ],
+ "stats": {
+  "actions": 6,
+  "strokes": 5,
+  "est_s": 80.0,
+  "floor_used": 0.224,
+  "free_depth_cm": 15.0,
+  "feasible_radii": [
+   6.5,
+   9.0
+  ],
+  "rejected": {
+   "regrasp": 5,
+   "hang": 62
+  }
+ }
+}

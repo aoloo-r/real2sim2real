@@ -1,0 +1,5 @@
+{
+ "box": {"inner_cm": [38, 38], "h_cm": 12, "wall_cm": 1.0},
+ "rope": {"length_cm": 200, "diameter_cm": 1.0},
+ "lift_max_cm": 50
+}

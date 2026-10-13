@@ -1,0 +1,32 @@
+{
+ "box": {
+  "inner_cm": [
+   38,
+   38
+  ],
+  "h_cm": 12,
+  "wall_cm": 1.0
+ },
+ "rope": {
+  "length_cm": 160,
+  "diameter_cm": 1.0
+ },
+ "object": {
+  "name": "crate",
+  "dims_cm": [
+   10,
+   10,
+   8
+  ],
+  "density_kg_cm3": 0.00125,
+  "start_xy": [
+   30,
+   -64
+  ]
+ },
+ "work_xy": [
+  0,
+  -50
+ ],
+ "table_half_x_cm": 85
+}

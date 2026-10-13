@@ -1,0 +1,85 @@
+{
+ "lift_plan_cm": 17.5,
+ "one_hand": true,
+ "threaded": false,
+ "hold": {
+  "min_lift_cm": 17.5,
+  "max_tilt_deg": 44.4
+ },
+ "carry": {
+  "min_lift_cm": 17.55,
+  "max_tilt_deg": 41.1
+ },
+ "completed": true,
+ "block_xyz": [
+  -6.28,
+  -13.5,
+  25.32
+ ],
+ "block_tilt_deg": 6.1,
+ "block_in_box": true,
+ "rope_in_box_frac": 1.0,
+ "grasps": [
+  {
+   "t": 4.88,
+   "tag": "fold_rope",
+   "hand": "left",
+   "seg": 1,
+   "where": "on the table",
+   "grasp_err_cm": 0.197
+  },
+  {
+   "t": 16.33,
+   "tag": "fold_rope",
+   "hand": "right",
+   "seg": 1,
+   "where": "on the table",
+   "grasp_err_cm": 0.459
+  },
+  {
+   "t": 31.6,
+   "tag": "pick_place crate",
+   "hand": "right",
+   "grasp_err_cm": 0.0
+  },
+  {
+   "t": 35.7,
+   "tag": "ends_over",
+   "hand": "right",
+   "grasp_err_cm": 2.213
+  },
+  {
+   "t": 47.08,
+   "tag": "eye_on_top",
+   "hand": "left",
+   "seg": 28,
+   "where": "on the table",
+   "grasp_err_cm": 0.202
+  },
+  {
+   "t": 55.27,
+   "tag": "hitch_lift",
+   "hand": "right",
+   "grasp_err_cm": 1.189
+  }
+ ],
+ "misses": [],
+ "sim_s": 81.9,
+ "wall_s": 161.2,
+ "tip_min_cm": 27.3,
+ "ik_err_max_cm": 0.0,
+ "ik_err_at": [
+  61.4,
+  "right",
+  [
+   -1.4,
+   -50.7,
+   61.7
+  ]
+ ],
+ "tip_in_block_frames": 23,
+ "tool_through_rope_frames": 130,
+ "linking": 0.517,
+ "knot": "girth",
+ "success": false
+}

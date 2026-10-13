@@ -1,0 +1,175 @@
+{
+ "final": {
+  "tag": "FINAL",
+  "t": 55.37,
+  "in_box_frac": 1.0,
+  "winding_turns": 2.8894279460315273,
+  "top_above_floor_cm": 2.164945602416992,
+  "radius_mean_cm": 7.741726018238717,
+  "radius_std_cm": 1.8839495097093195,
+  "centre_xy": [
+   1.811125224797676,
+   -15.894114144643147
+  ],
+  "min_z_cm": 20.99787139892578,
+  "on_ring_frac": 0.7666666666666667,
+  "turn_deg_p95": 36.62875737178319,
+  "turn_deg_max": 39.63050850231124,
+  "seg_gap_cm": [
+   2.331024514265225,
+   2.500108765890836
+  ],
+  "completed": true,
+  "success": false
+ },
+ "grasps": [
+  {
+   "t": 3.42,
+   "tag": "place_end",
+   "hand": "left",
+   "seg": 1,
+   "where": "on the table",
+   "grasp_err_cm": 0.199
+  },
+  {
+   "t": 12.3,
+   "tag": "lay_loop 0",
+   "hand": "right",
+   "seg": 20,
+   "where": "on the table",
+   "grasp_err_cm": 0.214
+  },
+  {
+   "t": 26.18,
+   "tag": "lay_loop 1",
+   "hand": "left",
+   "seg": 40,
+   "where": "on the table",
+   "grasp_err_cm": 0.214
+  },
+  {
+   "t": 40.37,
+   "tag": "lay_loop 2",
+   "hand": "right",
+   "seg": 58,
+   "where": "on the table",
+   "grasp_err_cm": 0.23
+  }
+ ],
+ "misses": [],
+ "sim_s": 55.4,
+ "wall_s": 107.6,
+ "tip_min_cm": 30.8,
+ "both_tips_in_box_frames": 0,
+ "frames": 3322,
+ "ik_err_max_cm": 0.0,
+ "stages": [
+  {
+   "tag": "after place_end s=0.0",
+   "t": 9.43,
+   "in_box_frac": 0.11666666666666667,
+   "winding_turns": 0.5327397661928054,
+   "top_above_floor_cm": 11.874530792236328,
+   "radius_mean_cm": 1.9322720944244958,
+   "radius_std_cm": 1.2745488903125533,
+   "centre_xy": [
+    1.7342276770089353,
+    -26.24975504193987
+   ],
+   "min_z_cm": 20.498044967651367,
+   "on_ring_frac": 0.05,
+   "turn_deg_p95": 36.99981615722424,
+   "turn_deg_max": 62.818073214479995,
+   "seg_gap_cm": [
+    2.1171829105719566,
+    2.5021084709527073
+   ]
+  },
+  {
+   "tag": "after lay_loop s=50.27",
+   "t": 23.37,
+   "in_box_frac": 0.5333333333333333,
+   "winding_turns": 2.1343276337650376,
+   "top_above_floor_cm": 11.920099258422852,
+   "radius_mean_cm": 6.8784102900520745,
+   "radius_std_cm": 2.80767509779458,
+   "centre_xy": [
+    0.49516459153710457,
+    -20.714422464370728
+   ],
+   "min_z_cm": 20.499353408813477,
+   "on_ring_frac": 0.38333333333333336,
+   "turn_deg_p95": 62.220414011896516,
+   "turn_deg_max": 84.956482034288,
+   "seg_gap_cm": [
+    1.7949314470618687,
+    2.501866513614479
+   ]
+  },
+  {
+   "tag": "after lay_loop s=100.53",
+   "t": 37.68,
+   "in_box_frac": 0.8833333333333333,
+   "winding_turns": 2.1085778746091752,
+   "top_above_floor_cm": 11.86176872253418,
+   "radius_mean_cm": 8.047187772952523,
+   "radius_std_cm": 2.493102898080466,
+   "centre_xy": [
+    1.0310006271081291,
+    -18.6337632952996
+   ],
+   "min_z_cm": 20.90119171142578,
+   "on_ring_frac": 0.6333333333333333,
+   "turn_deg_p95": 47.84502451732985,
+   "turn_deg_max": 66.65712305209587,
+   "seg_gap_cm": [
+    2.0106232999585347,
+    2.5020559977494923
+   ]
+  },
+  {
+   "tag": "after lay_loop s=148.0",
+   "t": 50.58,
+   "in_box_frac": 1.0,
+   "winding_turns": 2.880565765466244,
+   "top_above_floor_cm": 2.179576873779297,
+   "radius_mean_cm": 7.672131901597766,
+   "radius_std_cm": 1.9045688520168935,
+   "centre_xy": [
+    1.8573303533097107,
+    -15.966361045837402
+   ],
+   "min_z_cm": 20.998210906982422,
+   "on_ring_frac": 0.75,
+   "turn_deg_p95": 36.9820129464062,
+   "turn_deg_max": 44.24417048263284,
+   "seg_gap_cm": [
+    2.255142365820902,
+    2.4994312709408764
+   ]
+  },
+  {
+   "tag": "FINAL",
+   "t": 55.37,
+   "in_box_frac": 1.0,
+   "winding_turns": 2.8894279460315273,
+   "top_above_floor_cm": 2.164945602416992,
+   "radius_mean_cm": 7.741726018238717,
+   "radius_std_cm": 1.8839495097093195,
+   "centre_xy": [
+    1.811125224797676,
+    -15.894114144643147
+   ],
+   "min_z_cm": 20.99787139892578,
+   "on_ring_frac": 0.7666666666666667,
+   "turn_deg_p95": 36.62875737178319,
+   "turn_deg_max": 39.63050850231124,
+   "seg_gap_cm": [
+    2.331024514265225,
+    2.500108765890836
+   ],
+   "completed": true,
+   "success": false
+  }
+ ]
+}

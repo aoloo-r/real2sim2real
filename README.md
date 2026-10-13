@@ -116,3 +116,67 @@ Things to know before relying on a re-run:
 - `probes/` has the measurement scripts used on the recording (arm clearance,
   arm links inside the box, cloth shape while carried). They were written against
   scratch paths and need their paths edited.
+
+## Dual-arm rope coiling in simulation
+
+Two UR5e arms coil a rope into the box, hand over hand. A hand grasps the rope one
+loop-length further along than the last point already in the box, lifts it so the
+loop hangs, then lowers while circling once, so the hanging rope lays itself down
+as one loop. Hands alternate; only the laying hand is in the box.
+
+| File | Role |
+|---|---|
+| `twin/newton/tamp_rope.py` | Planner: coil radius, hence loop length, number of loops and strokes, from rope length, box size and the highest tip pose |
+| `twin/newton/twin_rope.py` | Executor: Newton cable (capsules + stretch/bend/twist joints, VBD) with table, box and self contact; kinematic arms with IK; records USD |
+
+```bash
+cd runs_2026-10/rope_coil
+./rerun.sh                         # plan + simulate scene.json, about 2 minutes
+./rerun.sh scene_260.json out_260  # another scene
+./show.sh best                     # play a recorded run in Isaac Sim
+```
+
+`scene.json` is a 200 cm × 1 cm rope and the 38 cm box. The run prints an audit:
+fraction of the rope in the box, turns around the coil centre, fraction lying on
+the planned ring (within 3 cm), and how sharply it kinks.
+
+Limits of the rope model: the arms are kinematic and do not collide with the rope
+or the box; a grasp is a pin on one rope segment, made only when the closed jaws
+are within 1.5 cm of it. Rope bending stiffness (`ROPE_BEND`) is a plausible value
+for a 1 cm cotton rope, not a measured one.
+
+The cloth scene and the rope scene are separate programs with separate run
+folders, so switching between them is a matter of which `show.sh` / `rerun.sh`
+you call.
+
+### Rope and rigid blocks together: `runs_2026-10/rope_blocks/`
+
+The rope is coiled, one block is set into the hollow of the coil and the others go
+on the floor behind it. `tamp_rope.py` picks the centre block (it must fit inside
+the ring, which bounds the coil radius from below), places the rest, and orders
+the actions. `./rerun.sh last` (default) coils first and then places the centre
+block; `./rerun.sh first` places the block first and coils around it, which fails
+in simulation: the rope trailing from the hand to the box rim sweeps the inside
+of the ring and either tips the block or ends up draped over it (`former_low/`,
+`former_high/`). `./show.sh best` plays the working run.
+
+### Tying a rope around a block and lifting it by the rope: `runs_2026-10/rope_sling/`
+
+`tamp_sling.py --knot girth` plans a choker hitch; `twin_rope.py` executes it:
+the robot folds a straight rope in half (two hands, with a hand-over), sets the
+block on the two strands, lays both ends over the block in one grip, lays the
+looped end on top across them, and one hand then lifts the block by the two
+ends, carries it over the box and lowers it in.
+
+```bash
+cd runs_2026-10/rope_sling
+./rerun.sh hitch       # plan + simulate from a straight rope, about 2.5 minutes
+./show.sh fold_best    # play the recorded run in Isaac Sim
+./rerun.sh plan        # the earlier knotless wrap, lifted by two hands
+```
+
+State of the hitch run: the block comes up 17.5 cm on one hand and ends in the
+box right way up, but hangs tilted up to 44 degrees (the pass bar is 25), so the
+audit reports FAIL. The run also flags frames where the gripper is inside the
+block or close to rope it is not holding; the arms are kinematic and these have
+not been checked. `open_wrap/` and `top_edge/` are knotless grips that do not lift.

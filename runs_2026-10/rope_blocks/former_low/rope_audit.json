@@ -1,0 +1,675 @@
+{
+ "final": {
+  "tag": "FINAL",
+  "t": 101.63,
+  "in_box_frac": 1.0,
+  "winding_turns": 3.918243796986772,
+  "top_above_floor_cm": 2.1767635345458984,
+  "radius_mean_cm": 7.846001360582035,
+  "radius_std_cm": 1.7981170174463081,
+  "centre_xy": [
+   1.475386680662632,
+   -21.25415370464325
+  ],
+  "min_z_cm": 20.998199462890625,
+  "on_ring_frac": 0.7625,
+  "turn_deg_p95": 31.610060477755145,
+  "turn_deg_max": 35.2855179600271,
+  "seg_gap_cm": [
+   2.3305509577177372,
+   2.500056904372205
+  ],
+  "blocks": {
+   "block1": {
+    "role": "beside",
+    "xyz": [
+     -7.0,
+     -0.0,
+     22.5
+    ],
+    "in_box": true,
+    "off_plan_cm": 0.0,
+    "tilt_deg": 0.0,
+    "bottom_above_floor_cm": -0.0
+   },
+   "block2": {
+    "role": "former",
+    "xyz": [
+     3.21,
+     -21.91,
+     24.7
+    ],
+    "in_box": true,
+    "off_plan_cm": 3.74,
+    "tilt_deg": 166.2,
+    "bottom_above_floor_cm": 1.2
+   },
+   "block3": {
+    "role": "beside",
+    "xyz": [
+     6.0,
+     0.49,
+     22.0
+    ],
+    "in_box": true,
+    "off_plan_cm": 0.01,
+    "tilt_deg": 0.0,
+    "bottom_above_floor_cm": -0.0
+   }
+  },
+  "turns_around_former": 3.923422954744501,
+  "completed": true,
+  "success": false
+ },
+ "grasps": [
+  {
+   "t": 10.42,
+   "tag": "pick_place block2",
+   "hand": "right",
+   "grasp_err_cm": 0.0
+  },
+  {
+   "t": 12.87,
+   "tag": "place_end",
+   "hand": "left",
+   "seg": 1,
+   "where": "on the table",
+   "grasp_err_cm": 0.202
+  },
+  {
+   "t": 21.63,
+   "tag": "lay_loop 0",
+   "hand": "right",
+   "seg": 20,
+   "where": "on the table",
+   "grasp_err_cm": 0.213
+  },
+  {
+   "t": 35.47,
+   "tag": "lay_loop 1",
+   "hand": "left",
+   "seg": 40,
+   "where": "on the table",
+   "grasp_err_cm": 0.207
+  },
+  {
+   "t": 49.78,
+   "tag": "lay_loop 2",
+   "hand": "right",
+   "seg": 60,
+   "where": "on the table",
+   "grasp_err_cm": 0.221
+  },
+  {
+   "t": 64.4,
+   "tag": "lay_loop 3",
+   "hand": "left",
+   "seg": 78,
+   "where": "on the table",
+   "grasp_err_cm": 0.334
+  },
+  {
+   "t": 84.22,
+   "tag": "pick_place block1",
+   "hand": "right",
+   "grasp_err_cm": 0.0
+  },
+  {
+   "t": 96.55,
+   "tag": "pick_place block3",
+   "hand": "right",
+   "grasp_err_cm": 0.004
+  }
+ ],
+ "misses": [],
+ "sim_s": 101.6,
+ "wall_s": 177.1,
+ "tip_min_cm": 26.1,
+ "both_tips_in_box_frames": 0,
+ "frames": 6098,
+ "ik_err_max_cm": 24.52,
+ "tip_in_block_frames": 0,
+ "stages": [
+  {
+   "tag": "after pick_place block2",
+   "t": 10.42,
+   "in_box_frac": 0.0,
+   "winding_turns": 0.0,
+   "top_above_floor_cm": 0.5127620697021484,
+   "radius_mean_cm": 18.627587167829624,
+   "radius_std_cm": 6.632447220240455,
+   "centre_xy": [
+    -8.774842716008425,
+    -62.514472532272336
+   ],
+   "min_z_cm": 20.497509002685547,
+   "on_ring_frac": 0.0,
+   "turn_deg_p95": 23.916238809776583,
+   "turn_deg_max": 24.021294274791043,
+   "seg_gap_cm": [
+    2.4448355024988158,
+    2.5001853518859183
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -48.0,
+      22.0
+     ],
+     "in_box": false,
+     "off_plan_cm": 61.85,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      0.0,
+      -20.0,
+      23.5
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.0,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.0,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.02,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   }
+  },
+  {
+   "tag": "after place_end s=0.0",
+   "t": 18.92,
+   "in_box_frac": 0.0875,
+   "winding_turns": 0.5386855845331882,
+   "top_above_floor_cm": 11.875211715698242,
+   "radius_mean_cm": 1.9111164635211964,
+   "radius_std_cm": 1.2604239929183014,
+   "centre_xy": [
+    1.554807586595416,
+    -30.311859948294504
+   ],
+   "min_z_cm": 20.498245239257812,
+   "on_ring_frac": 0.0375,
+   "turn_deg_p95": 34.792178625341414,
+   "turn_deg_max": 63.46453438812435,
+   "seg_gap_cm": [
+    2.1171867193871314,
+    2.5021512840914304
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -48.0,
+      22.0
+     ],
+     "in_box": false,
+     "off_plan_cm": 61.85,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      -0.0,
+      -20.0,
+      23.5
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.0,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.0,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.02,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   },
+   "turns_around_former": 0.07556043313008771
+  },
+  {
+   "tag": "after lay_loop s=50.27",
+   "t": 32.7,
+   "in_box_frac": 0.3875,
+   "winding_turns": 1.1173707142729996,
+   "top_above_floor_cm": 11.884916305541992,
+   "radius_mean_cm": 7.38617888413679,
+   "radius_std_cm": 1.9657514301309813,
+   "centre_xy": [
+    0.5007930275413298,
+    -25.23237963645689
+   ],
+   "min_z_cm": 20.49831771850586,
+   "on_ring_frac": 0.25,
+   "turn_deg_p95": 61.534999471921736,
+   "turn_deg_max": 67.29516533781819,
+   "seg_gap_cm": [
+    1.9270153860830366,
+    2.502181651422413
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -48.0,
+      22.0
+     ],
+     "in_box": false,
+     "off_plan_cm": 61.85,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      3.01,
+      -25.07,
+      24.5
+     ],
+     "in_box": true,
+     "off_plan_cm": 5.9,
+     "tilt_deg": 90.0,
+     "bottom_above_floor_cm": 1.0
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.0,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.02,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   },
+   "turns_around_former": 1.1101820113436514
+  },
+  {
+   "tag": "after lay_loop s=100.53",
+   "t": 47.05,
+   "in_box_frac": 0.6625,
+   "winding_turns": 2.051427014528546,
+   "top_above_floor_cm": 11.828468322753906,
+   "radius_mean_cm": 7.986543825362055,
+   "radius_std_cm": 2.3867155029655085,
+   "centre_xy": [
+    -0.15530083581524076,
+    -23.014886712128263
+   ],
+   "min_z_cm": 20.49843978881836,
+   "on_ring_frac": 0.5,
+   "turn_deg_p95": 42.74746439834171,
+   "turn_deg_max": 71.17503453505118,
+   "seg_gap_cm": [
+    1.9889085615962137,
+    2.502373041977877
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -48.0,
+      22.0
+     ],
+     "in_box": false,
+     "off_plan_cm": 61.85,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      1.49,
+      -19.5,
+      24.51
+     ],
+     "in_box": true,
+     "off_plan_cm": 1.57,
+     "tilt_deg": 90.0,
+     "bottom_above_floor_cm": 1.01
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.0,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.02,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   },
+   "turns_around_former": 2.0372804836171414
+  },
+  {
+   "tag": "after lay_loop s=150.8",
+   "t": 61.15,
+   "in_box_frac": 0.9125,
+   "winding_turns": 3.11454775645001,
+   "top_above_floor_cm": 11.918067932128906,
+   "radius_mean_cm": 8.102420916345189,
+   "radius_std_cm": 2.137379648821738,
+   "centre_xy": [
+    1.351856896526193,
+    -22.7578530115624
+   ],
+   "min_z_cm": 20.95041275024414,
+   "on_ring_frac": 0.6625,
+   "turn_deg_p95": 48.12711217780331,
+   "turn_deg_max": 72.38139070732247,
+   "seg_gap_cm": [
+    1.8986965413222539,
+    2.5021219981778695
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -48.0,
+      22.0
+     ],
+     "in_box": false,
+     "off_plan_cm": 61.85,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      4.46,
+      -23.55,
+      25.01
+     ],
+     "in_box": true,
+     "off_plan_cm": 5.7,
+     "tilt_deg": 169.0,
+     "bottom_above_floor_cm": 1.51
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.0,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.03,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   },
+   "turns_around_former": 2.1399717792583406
+  },
+  {
+   "tag": "after lay_loop s=198.0",
+   "t": 74.62,
+   "in_box_frac": 1.0,
+   "winding_turns": 3.8915895643406917,
+   "top_above_floor_cm": 2.296497344970703,
+   "radius_mean_cm": 7.900223604380305,
+   "radius_std_cm": 1.905595604109475,
+   "centre_xy": [
+    1.439261045260355,
+    -21.210797548294067
+   ],
+   "min_z_cm": 20.997081756591797,
+   "on_ring_frac": 0.7625,
+   "turn_deg_p95": 31.57358595690725,
+   "turn_deg_max": 32.58564788168312,
+   "seg_gap_cm": [
+    2.3116980241290133,
+    2.499535052358967
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -48.0,
+      22.0
+     ],
+     "in_box": false,
+     "off_plan_cm": 61.85,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      4.26,
+      -23.13,
+      24.75
+     ],
+     "in_box": true,
+     "off_plan_cm": 5.29,
+     "tilt_deg": 166.9,
+     "bottom_above_floor_cm": 1.25
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.01,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.03,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   },
+   "turns_around_former": 3.89994691905047
+  },
+  {
+   "tag": "after pick_place block1",
+   "t": 84.22,
+   "in_box_frac": 1.0,
+   "winding_turns": 3.902784792857249,
+   "top_above_floor_cm": 2.211833953857422,
+   "radius_mean_cm": 7.87925536635035,
+   "radius_std_cm": 1.8681944661219714,
+   "centre_xy": [
+    1.43864860618487,
+    -21.213006579875945
+   ],
+   "min_z_cm": 20.998353958129883,
+   "on_ring_frac": 0.775,
+   "turn_deg_p95": 31.972660573057123,
+   "turn_deg_max": 34.8289448294096,
+   "seg_gap_cm": [
+    2.3123715901346773,
+    2.4997812691420873
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      -7.0,
+      0.0,
+      22.5
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.0,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      4.26,
+      -22.97,
+      24.88
+     ],
+     "in_box": true,
+     "off_plan_cm": 5.19,
+     "tilt_deg": 164.8,
+     "bottom_above_floor_cm": 1.38
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      32.0,
+      -72.01,
+      21.5
+     ],
+     "in_box": false,
+     "off_plan_cm": 77.03,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.5
+    }
+   },
+   "turns_around_former": 3.9112262284906443
+  },
+  {
+   "tag": "after pick_place block3",
+   "t": 96.55,
+   "in_box_frac": 1.0,
+   "winding_turns": 3.9125735874939145,
+   "top_above_floor_cm": 2.179187774658203,
+   "radius_mean_cm": 7.857887562913822,
+   "radius_std_cm": 1.8199044803030409,
+   "centre_xy": [
+    1.4509394336491823,
+    -21.232516491413115
+   ],
+   "min_z_cm": 20.998079299926758,
+   "on_ring_frac": 0.7625,
+   "turn_deg_p95": 32.21844207291076,
+   "turn_deg_max": 34.92468779442887,
+   "seg_gap_cm": [
+    2.3280300310864557,
+    2.499926388380331
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      -7.0,
+      -0.0,
+      22.5
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.0,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      3.18,
+      -22.0,
+      24.72
+     ],
+     "in_box": true,
+     "off_plan_cm": 3.75,
+     "tilt_deg": 165.8,
+     "bottom_above_floor_cm": 1.22
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      6.0,
+      0.5,
+      22.0
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.0,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    }
+   },
+   "turns_around_former": 3.9172609140310684
+  },
+  {
+   "tag": "FINAL",
+   "t": 101.63,
+   "in_box_frac": 1.0,
+   "winding_turns": 3.918243796986772,
+   "top_above_floor_cm": 2.1767635345458984,
+   "radius_mean_cm": 7.846001360582035,
+   "radius_std_cm": 1.7981170174463081,
+   "centre_xy": [
+    1.475386680662632,
+    -21.25415370464325
+   ],
+   "min_z_cm": 20.998199462890625,
+   "on_ring_frac": 0.7625,
+   "turn_deg_p95": 31.610060477755145,
+   "turn_deg_max": 35.2855179600271,
+   "seg_gap_cm": [
+    2.3305509577177372,
+    2.500056904372205
+   ],
+   "blocks": {
+    "block1": {
+     "role": "beside",
+     "xyz": [
+      -7.0,
+      -0.0,
+      22.5
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.0,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    },
+    "block2": {
+     "role": "former",
+     "xyz": [
+      3.21,
+      -21.91,
+      24.7
+     ],
+     "in_box": true,
+     "off_plan_cm": 3.74,
+     "tilt_deg": 166.2,
+     "bottom_above_floor_cm": 1.2
+    },
+    "block3": {
+     "role": "beside",
+     "xyz": [
+      6.0,
+      0.49,
+      22.0
+     ],
+     "in_box": true,
+     "off_plan_cm": 0.01,
+     "tilt_deg": 0.0,
+     "bottom_above_floor_cm": -0.0
+    }
+   },
+   "turns_around_former": 3.923422954744501,
+   "completed": true,
+   "success": false
+  }
+ ]
+}

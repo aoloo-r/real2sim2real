@@ -1,0 +1,81 @@
+{
+ "task": "sling",
+ "scene": {
+  "box": {
+   "inner_cm": [
+    38,
+    38
+   ],
+   "h_cm": 12,
+   "wall_cm": 1.0
+  },
+  "rope": {
+   "length_cm": 120,
+   "diameter_cm": 1.0
+  },
+  "object": {
+   "name": "crate",
+   "dims_cm": [
+    10,
+    10,
+    8
+   ],
+   "density_kg_cm3": 0.0005,
+   "start_xy": [
+    30,
+    -64
+   ]
+  },
+  "work_xy": [
+   0,
+   -50
+  ],
+  "table_half_x_cm": 65
+ },
+ "sling": {
+  "rot90": false,
+  "along_cm": 10.0,
+  "wrap_cm": 36.0,
+  "land_cm": 12.0,
+  "hand_sep_cm": 22.0,
+  "lift_cm": 17.5,
+  "tip_above_table_cm": 35.5,
+  "free_end_cm": 29.0
+ },
+ "plan": [
+  {
+   "op": "place_on_rope",
+   "name": "crate",
+   "hand": "right",
+   "rot90": false
+  },
+  {
+   "op": "drape",
+   "hand": "left",
+   "s_cm": 6.0,
+   "anchor_s_cm": 55.0,
+   "to_side": 1,
+   "land_cm": 12.0
+  },
+  {
+   "op": "drape",
+   "hand": "right",
+   "s_cm": 114.0,
+   "anchor_s_cm": 65.0,
+   "to_side": -1,
+   "land_cm": 12.0
+  },
+  {
+   "op": "lift_carry_lower",
+   "right_s_cm": 23.0,
+   "left_s_cm": 97.0,
+   "lift_cm": 17.5,
+   "hold_s": 3.0
+  }
+ ],
+ "knot": "none",
+ "stats": {
+  "actions": 4,
+  "rejected": []
+ }
+}

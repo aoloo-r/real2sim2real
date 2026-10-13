@@ -16,3 +16,4 @@ imgui.ini
 # recorded simulation runs: keep plans/logs/scripts, not the ~1 GB recordings or code snapshots
 runs_*/**/*.usd
 *.snapshot
+runs_2026-10/rope_*/**/*.png

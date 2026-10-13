@@ -37,7 +37,9 @@ class UsdRecorder:
         self.stage = stage
 
         # --- garment: one deforming mesh -------------------------------------------------
-        tris = model.tri_indices.numpy().reshape(-1, 3)
+        # a scene without cloth (the rope twin) still records its robot and props
+        tris = (model.tri_indices.numpy().reshape(-1, 3) if int(getattr(model, "tri_count", 0) or 0) > 0
+                else np.zeros((0, 3), np.int32))
         g = UsdGeom.Mesh.Define(stage, "/World/garment")
         g.CreateFaceVertexIndicesAttr(tris.flatten().tolist())
         g.CreateFaceVertexCountsAttr([3] * len(tris))
@@ -185,8 +187,8 @@ class UsdRecorder:
             return
         Gf, Usd = self._Gf, self._Usd
         tc = Usd.TimeCode(self.t)
-        q = state.particle_q.numpy()[:n_cloth]
-        if np.isfinite(q).all():
+        q = state.particle_q.numpy()[:n_cloth] if (n_cloth and state.particle_q is not None) else np.zeros((0, 3))
+        if len(q) and np.isfinite(q).all():
             self.garment_pts.Set([Gf.Vec3f(*map(float, p)) for p in q], tc)
             if self.under_pts is not None:
                 t = self.tris[(self.tris < len(q)).all(1)]

@@ -1,0 +1,24 @@
+Warp DeprecationWarning: warp.config.quiet is deprecated; use warp.config.log_level = warp.LOG_WARNING to suppress the init banner.
+/home/aoloo/real2sim2real/runs_2026-10/rope_sling/../../twin/newton/twin_rope.py:203: DeprecationWarning: Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. Scalar gravity will be removed in a future release.
+  b = ModelBuilder(gravity=-981.0)
+/home/aoloo/real2sim2real/runs_2026-10/rope_sling/../../twin/newton/twin_rope.py:250: DeprecationWarning: The legacy DOF-shaped joint_target_q layout is deprecated for models whose joint coordinate and DOF counts differ (free/ball/distance joints). In a future release joint_target_q will always use the coordinate layout (matching joint_q) and newton.use_coord_layout_targets will be removed. Set newton.use_coord_layout_targets = True before building models and index targets via Model.joint_target_q_start.
+  self.model = b.finalize()
+[usd-rec] recording to best/rope.usd: 28 robot bodies (84 link meshes, 0 boxes), garment 0 tris, 15fps
+[twin-rope] rope 120 cm x 1.0 cm, 48 segments (48 g), box inner 38 cm h 12 at (0,-14); coil R 8.0 at (0.0,-14.0), loop 50.0 cm; device cuda:0
+[twin-rope] t=  7.8s pick_place crate (slung): right set it at (-0.0,-49.1,24.9), plan (0.0,-50.0), grasp 0.00 cm off centre
+[twin-rope] t= 10.0s  wall 15s
+[twin-rope] t= 11.9s drape: left grasped s=6 cm (on the table) at (-53.7,-49.1,20.5), tip-to-rope 0.28 cm
+[twin-rope] t= 20.0s  wall 31s
+[twin-rope] t= 21.1s drape: left laid its end at x=18.5; block moved 2.1 cm, tilt 9 deg
+[twin-rope] t= 23.7s drape: right grasped s=114 cm (on the table) at (56.0,-48.5,20.5), tip-to-rope 0.20 cm
+[twin-rope] t= 30.0s  wall 48s
+[twin-rope] t= 32.7s drape: right laid its end at x=-15.0; block moved 1.2 cm, tilt 7 deg
+[twin-rope] t= 35.3s sling: right grasped s=24 cm (hanging outside) at (6.4,-48.1,28.3), tip-to-rope 0.28 cm
+[twin-rope] t= 37.8s sling: left grasped s=96 cm (hanging outside) at (-5.1,-47.8,28.5), tip-to-rope 0.23 cm
+[twin-rope] t= 40.0s  wall 67s
+[twin-rope] t= 45.3s sling: block hangs 17.5 cm above where it stood for 3s, tilt up to 14 deg; hands 11 cm apart
+[twin-rope] t= 50.0s  wall 85s
+[twin-rope] t= 60.0s  wall 101s
+[usd-rec] saved best/rope.usd: 913 frames (61s of animation) - open in Isaac Sim and press PLAY
+[twin-rope] SLING result: SUCCESS - hold: lowest 17.5 cm up, tilt up to 14 deg; carry: lowest 17.6 cm up (rim needs 12.5), tilt up to 15 deg; block ends at (2.4,-17.9,24.5) in box True, tilt 0 deg; rope 100% in the box; 5 grasps, 0 misses, 61s sim / 102s wall; tips closest 11.3 cm, worst IK lag 33.6 cm (34.7, 'right', [5.9, -48.2, 29.8]), tip inside the block 0 frames
+[usd-rec] saved best/rope.usd: 913 frames (61s of animation) - open in Isaac Sim and press PLAY
