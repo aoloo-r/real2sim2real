@@ -1,0 +1,135 @@
+{
+ "task": "sled",
+ "scene": {
+  "box": {
+   "inner_cm": [
+    38,
+    38
+   ],
+   "h_cm": 12
+  },
+  "towel": {
+   "centre_xy": [
+    0,
+    -90
+   ],
+   "size_cm": [
+    30,
+    60
+   ],
+   "mass_kg": 0.25,
+   "mu": 0.5
+  },
+  "mu_table": 0.5,
+  "pack_towel": true,
+  "objects": [
+   {
+    "name": "block1",
+    "shape": "box",
+    "dims_cm": [
+     8,
+     8,
+     6
+    ],
+    "mass_kg": 0.35,
+    "mu": 0.5,
+    "on_towel_xy": [
+     -6,
+     -22
+    ]
+   },
+   {
+    "name": "block2",
+    "shape": "box",
+    "dims_cm": [
+     10,
+     6,
+     4
+    ],
+    "mass_kg": 0.3,
+    "mu": 0.5,
+    "on_towel_xy": [
+     -5,
+     -6
+    ]
+   },
+   {
+    "name": "cup",
+    "shape": "cylinder",
+    "dims_cm": [
+     8,
+     8,
+     9
+    ],
+    "mass_kg": 0.15,
+    "mu": 0.5,
+    "on_towel_xy": [
+     7,
+     -20
+    ]
+   },
+   {
+    "name": "bottle",
+    "shape": "cylinder",
+    "dims_cm": [
+     6.4,
+     6.4,
+     20
+    ],
+    "mass_kg": 0.5,
+    "mu": 0.5,
+    "on_towel_xy": [
+     6,
+     22
+    ]
+   }
+  ]
+ },
+ "plan": [
+  {
+   "op": "pick_place",
+   "name": "bottle",
+   "to_xy": [
+    9.2,
+    18.0
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "block2",
+   "to_xy": [
+    0.0,
+    9.8
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "cup",
+   "to_xy": [
+    0.8,
+    18.0
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "block1",
+   "to_xy": [
+    -8.4,
+    18.0
+   ]
+  }
+ ],
+ "riders": [],
+ "first": [
+  "bottle"
+ ],
+ "accel": 150.0,
+ "dist_cm": 33.6,
+ "pull_for": {
+  "objects_cm": 28.5,
+  "folding_cm": 33.6
+ },
+ "towel_place": null,
+ "rows": 2,
+ "est_s": 85.5
+}

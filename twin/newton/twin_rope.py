@@ -80,10 +80,10 @@ def rotvec(R):
 class Arms:
     """Two kinematic UR5e arms on a CPU model: FK by newton.eval_fk, IK by damped least squares."""
 
-    def __init__(self):
+    def __init__(self, bases=ARM_BASES):
         b = ModelBuilder()
         self.hands = {}
-        for name, bx in ARM_BASES:
+        for name, bx in bases:
             xf = wp.transform((bx, -2.0, TABLE_TOP + 4.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi / 2.0))
             j0, b0 = b.joint_count, b.body_count
             w3, _d0, _na, pinch = add_ur5e_gripper(b, xf, scale=100.0, home=False, loop_joints=False,

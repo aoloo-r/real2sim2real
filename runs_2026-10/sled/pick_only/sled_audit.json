@@ -1,0 +1,67 @@
+{
+ "completed": false,
+ "error": "pick block2: 97 cm from the nearest arm's base, reach is 88",
+ "objects": {
+  "block1": {
+   "mode": "packed first",
+   "xy": [
+    -6.0,
+    -112.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 0.0,
+   "from_base_cm": 112.6,
+   "in_box": false,
+   "status": "not in box"
+  },
+  "block2": {
+   "mode": "packed first",
+   "xy": [
+    -5.0,
+    -96.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 0.0,
+   "from_base_cm": 97.3,
+   "in_box": false,
+   "status": "not in box"
+  },
+  "cup": {
+   "mode": "packed first",
+   "xy": [
+    7.0,
+    -110.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 0.0,
+   "from_base_cm": 110.4,
+   "in_box": false,
+   "status": "not in box"
+  },
+  "bottle": {
+   "mode": "packed first",
+   "xy": [
+    9.2,
+    18.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 0.0,
+   "from_base_cm": 28.9,
+   "in_box": true,
+   "status": "ok"
+  }
+ },
+ "sim_s": 16.1,
+ "wall_s": 48.8,
+ "log": [
+  {
+   "op": "pick_place",
+   "name": "bottle",
+   "hand": "right",
+   "t": 11.45
+  }
+ ],
+ "ik_err_max_cm": 0.0,
+ "tip_min_cm": 23.2,
+ "success": false
+}

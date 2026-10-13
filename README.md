@@ -180,3 +180,45 @@ box right way up, but hangs tilted up to 44 degrees (the pass bar is 25), so the
 audit reports FAIL. The run also flags frames where the gripper is inside the
 block or close to rope it is not holding; the arms are kinematic and these have
 not been checked. `open_wrap/` and `top_edge/` are knotless grips that do not lift.
+
+## Towel as a tool, then packed too (`runs_2026-10/sled/`)
+
+Two blocks, a cup and a bottle stand on a towel; three of them are beyond the reach
+of both arms. The arms pull the towel to bring them within reach, pack all four
+into the box, then fold the towel and pack it as well.
+
+`tamp_sled.py` plans all of it:
+- which reachable objects to pack before the pull (they would topple if they rode);
+- how far and how hard to pull, far enough for the objects and for the towel's far
+  corners to be within reach for folding; each candidate is checked by simulating
+  the pull in the twin;
+- where the objects go in the box (rows at the back) so one strip of floor stays free;
+- the fewest folds that make the towel fit that strip.
+
+`twin_sled.py` is one coupled Newton VBD world (cloth + dynamic rigid objects),
+so objects ride, slip or topple by friction and inertia, and the towel really folds.
+
+`props.py` defines the mug and the bottle once, for rendering, physics and grasping:
+- mug: hollow with a handle; grasped by a pinch on the rim wall opposite the handle
+  and set down square to the box; its footprint in the plan includes the handle;
+- bottle: body, shoulder, neck and cap; grasped at the neck; `fill` in the scene sets
+  the water level, which sets the centre of mass.
+
+```bash
+cd runs_2026-10/sled
+./rerun.sh                          # plan with rollouts, then execute; about 8 minutes
+./rerun.sh scene_empty_bottle.json  # same scene, bottle nearly empty
+./show.sh best                      # play the recorded run in Isaac Sim (box drawn without its front wall)
+./show.sh solid_cylinders           # the earlier run, cup and bottle as solid cylinders
+./show.sh pick_only                 # the baseline without the pull: 1 of 4 objects packed
+```
+
+With the bottle as a uniform solid cylinder, the simulated pull toppled it and the
+plan packed it first. With the mass where the water is, it rides the pull at
+300 cm/s2, full or nearly empty, and the plan pulls everything.
+
+Limits: the arms are kinematic and collide with nothing; grasps are pins (on the
+cloth particles under the jaws, or on the object); the mug collides as its outer
+cylinder plus a handle box (nothing can fall into it) and the water does not slosh;
+friction values are assumed, not measured. The towel's set-down is not repeatable:
+across four runs it ended 100, 99, 88 and 84 % inside its planned rectangle (bar: 90 %).

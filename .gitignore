@@ -17,3 +17,4 @@ imgui.ini
 runs_*/**/*.usd
 *.snapshot
 runs_2026-10/rope_*/**/*.png
+runs_2026-10/sled/**/*.png
