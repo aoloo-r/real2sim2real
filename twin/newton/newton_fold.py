@@ -629,7 +629,10 @@ class Fold:
         if self.want_physical_grasp:
             # EXAMPLE-FAITHFUL (cloth_franka): these exact values are what lets the closing pads
             # physically pinch + hold the fabric by friction (robot shape mu 1.5), no pin.
-            self.model.soft_contact_ke = 1e4; self.model.soft_contact_kd = 1e-2; self.model.soft_contact_mu = 0.25
+            # grip capacity = friction x normal force. mu=0.25 caught but let the fabric slip; mu=1.6 +
+            # stiffer contact EXPLODED it (cloth ejected through the table). Moderate friction, example
+            # stiffness -> more hold without destabilising the pinch (this band is tuning-fragile).
+            self.model.soft_contact_ke = 1e4; self.model.soft_contact_kd = 1e-2; self.model.soft_contact_mu = 0.6
         else:
             self.model.soft_contact_ke = 1.5e4; self.model.soft_contact_kd = 5e-2; self.model.soft_contact_mu = 0.4  # firm but STABLE box contact + damping (too-stiff ejects particles)
         ke = self.model.shape_material_ke.numpy(); kd = self.model.shape_material_kd.numpy(); mu = self.model.shape_material_mu.numpy()
@@ -1152,7 +1155,9 @@ class Fold:
         ts, qs, gs = [], [], []
         t = 0.0
         for s in traj["segments"]:
-            q = s["q"]; dur = float(s["dur"]); grip = 0.1 if s["gripper"] == "closed" else 0.8
+            # closed=0.1 left the pads ~0.8cm apart (a loose pinch); the real Robotiq Hand-E closes
+            # FULLY with a tight grip. Drive the fingers to a near-zero gap so they clamp the fabric.
+            q = s["q"]; dur = float(s["dur"]); grip = 0.02 if s["gripper"] == "closed" else 0.8
             n = len(q)
             for j, qj in enumerate(q):
                 ts.append(t + dur * (j / (n - 1) if n > 1 else 0.0)); qs.append(qj); gs.append(grip)
@@ -1167,8 +1172,31 @@ class Fold:
             qt = self.exec_q[i]; self.cur_grip = float(self.exec_g[i])
             q = state_in.joint_q.numpy()
             dq = np.zeros(self.model.joint_dof_count)
-            dq[:7] = qt - q[:7]                         # drive arm joints toward the planned config
-            dq[-2] = self.cur_grip * 4.0 - q[-2]; dq[-1] = self.cur_grip * 4.0 - q[-1]
+            # GRIPPER: the old proportional drive (target - q) ASYMPTOTED -> the pads closed too slowly
+            # and finished a whole phase late (only shut as they were about to re-open). Fix: on CLOSE,
+            # overshoot to a negative target so the fingers CLAMP HARD until the fabric blocks them, with
+            # a high gain so they fully shut FAST -- within the grasp dwell, before the arm lifts.
+            closing_cmd = self.cur_grip < 0.4
+            arm_arrived = float(np.linalg.norm(qt - q[:7])) < 0.15
+            # LATCH the grasp: close once the arm ARRIVES at the cloth, then STAY shut through the whole
+            # lift/carry/fold (even while the arm moves) until the trajectory commands OPEN at the
+            # release. Gating close purely on arm_arrived also re-opened the pads whenever the arm was
+            # moving mid-carry -> it dropped the cloth right after grasping. The latch fixes both:
+            # no mid-air close (waits for arrival) AND no early release (holds until the open command).
+            if not closing_cmd:
+                self._grasp_latched = False            # trajectory commands OPEN -> release here
+            elif arm_arrived:
+                self._grasp_latched = True             # arm reached the cloth -> clamp + latch shut
+            do_close = bool(closing_cmd and getattr(self, "_grasp_latched", False))
+            g_target = -1.0 if do_close else 3.2       # clamp HARD while grasped; else OPEN
+            g_gain = 4.0 if do_close else 3.0
+            dq[-2] = (g_target - q[-2]) * g_gain; dq[-1] = (g_target - q[-1]) * g_gain
+            # DWELL: freeze the arm ONLY during the initial shut (pads still open); once clamped, the
+            # carry proceeds normally.
+            if do_close and max(q[-2], q[-1]) > 0.3:
+                dq[:7] = 0.0                            # hold arm still while the pads finish closing
+            else:
+                dq[:7] = qt - q[:7]                     # drive arm joints toward the planned config
             self.target_joint_qd.assign(dq)
             return
         if self.sim_time >= self.robot_key_poses_time[-1]:
@@ -1297,19 +1325,39 @@ class Fold:
         """Write the fold's geometric keyframe fingertip poses + obstacles in the FRANKA-BASE frame
         (metres) for cuRobo to plan collision-free joint trajectories through."""
         import json
-        base = np.array([-50.0, -50.0, 0.0])          # Franka base in world (cm)
+        # cuRobo (franka.yml) plans in the CANONICAL franka base frame (base at origin, identity).
+        # Newton places THIS franka at self.robot_base with a yaw rotation (line ~844: _ang = pi +
+        # base_yaw about z). So a world target must be expressed in the franka-base frame as
+        # R_base^T @ (world - base). The old export used a stale translation (-50,-50,0) and NO
+        # rotation -> cuRobo planned in a shifted/rotated frame and the gripper missed the cloth.
+        base = np.array(self.robot_base, dtype=float)          # actual Newton placement (cm)
+        theta = np.pi + np.radians(getattr(self, "base_yaw_deg", 0.0))
+        c_, s_ = np.cos(theta), np.sin(theta)
+
+        def to_franka(world_xyz):                              # world (cm) -> franka-base frame (m)
+            d = np.asarray(world_xyz, float) - base
+            return np.array([d[0] * c_ + d[1] * s_, -d[0] * s_ + d[1] * c_, d[2]]) / 100.0
+
         kfs = []
         for row in self.robot_key_poses:
-            x, y, z = float(row[1]), float(row[2]), float(row[3])
-            kfs.append({"dur": float(row[0]),
-                        "fingertip_m": [(x - base[0]) / 100.0, (y - base[1]) / 100.0, (z - base[2]) / 100.0],
+            p = to_franka([row[1], row[2], row[3]])
+            # DIG-IN: near-table keyframes (grasp descend/close, lay) stop a few cm high because cuRobo
+            # plans the HAND (fingertip + ee_offset) and stops short of the surface. Command those a bit
+            # deeper so the fingertip reaches INTO the fabric and the fingers actually close on it.
+            if p[2] < 0.02:
+                p[2] -= 0.06
+            kfs.append({"dur": float(row[0]), "fingertip_m": p.tolist(),
                         "gripper": "open" if float(row[8]) > 0.4 else "closed"})
-        obstacles = [{"name": "table", "center_m": [0.5, 0.0, 0.1], "dims_m": [0.8, 0.8, 0.2]}]
+        # table obstacle: its TOP must sit just below the cloth surface IN THE FRANKA FRAME, or the
+        # grasps map "inside" the table and cuRobo refuses to descend. World table top ~= table_top.
+        table_top_franka = (float(getattr(self, "table_top", 20.0)) - base[2]) / 100.0
+        obstacles = [{"name": "table", "center_m": [0.5, 0.0, round(table_top_franka - 0.1, 4)],
+                      "dims_m": [1.4, 1.4, 0.2]}]
         if self.fbox is not None:
             bv = self.fbox["verts"].astype(np.float64)
-            c = ((bv.max(0) + bv.min(0)) / 2.0 - base) / 100.0
-            d = (bv.max(0) - bv.min(0)) / 100.0
-            obstacles.append({"name": "box", "center_m": c.tolist(), "dims_m": d.tolist()})
+            cc = to_franka((bv.max(0) + bv.min(0)) / 2.0)
+            dd = (bv.max(0) - bv.min(0)) / 100.0
+            obstacles.append({"name": "box", "center_m": cc.tolist(), "dims_m": dd.tolist()})
         json.dump({"keyframes": kfs, "obstacles": obstacles,
                    "down_quat_wxyz": [0.0, 1.0, 0.0, 0.0], "ee_offset_z": 0.105,
                    "home_js": [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741]},

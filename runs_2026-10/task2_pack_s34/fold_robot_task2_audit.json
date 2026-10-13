@@ -1,0 +1,362 @@
+[
+ {
+  "tag": "after 'towelB: label move 1: far_left_corner->near_left_corner + far_right_corner->near_right_corner'",
+  "t": 21.799999999998228,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.0
+   },
+   "towelA": {
+    "fold_sat": [
+     1,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 0.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 0.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'task 2: pack towelB into the box {'dx': 0.0, 'dy': -11.0, 'rot90': False, 'name': 'towelB'}'",
+  "t": 52.966666666649836,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.0
+   },
+   "towelA": {
+    "fold_sat": [
+     1,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 0.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'towelA: label move 3: far_right_corner->near_right_corner + far_left_corner->near_left_corner'",
+  "t": 78.53333333330416,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.0
+   },
+   "towelA": {
+    "fold_sat": [
+     3,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 0.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'towelA: label move 4: near_right_corner->near_left_corner + far_right_corner->far_left_corner'",
+  "t": 110.76666666662192,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.0
+   },
+   "towelA": {
+    "fold_sat": [
+     3,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 0.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'task 5: pack towelA into the box {'dx': -10.0, 'dy': 7.0, 'rot90': False, 'name': 'towelA'}'",
+  "t": 159.06666666661184,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.0
+   },
+   "towelA": {
+    "fold_sat": [
+     3,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'shirt: label move 6: left_armpit->right_hem_corner + right_armpit->left_hem_corner'",
+  "t": 181.53333333327723,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.0
+   },
+   "towelA": {
+    "fold_sat": [
+     3,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'right_armpit->left_hem_corner (second pinch, left hand)'",
+  "t": 214.23333333327537,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.011808576755748913
+   },
+   "towelA": {
+    "fold_sat": [
+     3,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'shirt: label move 7: left_shoulder->right_shoulder'",
+  "t": 232.89999999994097,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 0.012119328775637041
+   },
+   "towelA": {
+    "fold_sat": [
+     3,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'task 8: pack shirt into the box {'dx': 8.0, 'dy': 5.0, 'rot90': False, 'name': 'shirt'}'",
+  "t": 272.09999999992505,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 1.0
+   },
+   "towelA": {
+    "fold_sat": [
+     2,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": false,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'task 9: pick_place:block2:3,-9,1.2'",
+  "t": 291.2999999999076,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 1.0
+   },
+   "towelA": {
+    "fold_sat": [
+     2,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": false,
+   "block2": true,
+   "block3": false
+  }
+ },
+ {
+  "tag": "after 'task 10: pick_place:block1:5,0,3.2'",
+  "t": 310.4999999998901,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 1.0
+   },
+   "towelA": {
+    "fold_sat": [
+     2,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": true,
+   "block2": true,
+   "block3": false
+  }
+ },
+ {
+  "tag": "FINAL",
+  "t": 329.69999999987266,
+  "garments": {
+   "shirt": {
+    "in_box_frac": 1.0
+   },
+   "towelA": {
+    "fold_sat": [
+     2,
+     6
+    ],
+    "goal": "quarter",
+    "in_box_frac": 1.0
+   },
+   "towelB": {
+    "fold_sat": [
+     4,
+     4
+    ],
+    "goal": "half_y",
+    "in_box_frac": 1.0
+   }
+  },
+  "blocks": {
+   "block1": true,
+   "block2": true,
+   "block3": true
+  }
+ }
+]

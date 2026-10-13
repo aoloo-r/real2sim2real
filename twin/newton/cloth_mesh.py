@@ -30,6 +30,29 @@ def refine_mask_by_color(mask, rgb):
     garment's OWN median colour (sampled inside the mask), then smooth the ragged boundary. General: keys
     off the object's own colour, not a hardcoded hue. Returns a clean bool mask."""
     rgb = rgb.astype(np.float32)
+    # OVER-SEGMENTATION GUARD. SAM handed back the whole TABLETOP with the shirt inside it on
+    # 2026-09-03 (capture 141425, plain back of a yellow tee on a white table): 68% of the image,
+    # where a garment at 0.7m covers 25-35%. Growing that by colour made it worse (1.38x the flat
+    # shirt) and the twin scaled the asset to 77cm. If the mask is implausibly large, split it
+    # into two colour clusters and keep the more SATURATED one - a garment has colour, a lab
+    # table does not. A white garment on a white table stays ambiguous either way.
+    if mask.mean() > 0.45:
+        px = rgb[mask]
+        sat = px.max(1) - px.min(1)
+        c_lo, c_hi = np.percentile(sat, 10), np.percentile(sat, 90)
+        for _ in range(8):                                 # 1-D k-means on saturation
+            lab = np.abs(sat - c_hi) < np.abs(sat - c_lo)
+            if lab.sum() == 0 or (~lab).sum() == 0:
+                break
+            c_hi, c_lo = sat[lab].mean(), sat[~lab].mean()
+        if c_hi - c_lo > 25:                               # two genuinely different populations
+            keep = np.zeros_like(mask)
+            keep[mask] = np.abs(sat - c_hi) < np.abs(sat - c_lo)
+            keep = ndimage.binary_opening(keep, iterations=2)
+            keep = ndimage.binary_fill_holes(_largest(keep))
+            print(f"[cloth_mesh] mask covered {mask.mean():.0%} of the image - kept the saturated "
+                  f"cluster ({keep.mean():.0%}); the segmenter had taken the table", flush=True)
+            mask = keep
     core = ndimage.binary_erosion(mask, iterations=4)
     core = core if core.sum() > 50 else mask
     med = np.median(rgb[core], axis=0)
@@ -186,9 +209,21 @@ def cloth_from_mask(mask_path, cap_dir, step=7, base_frame="ur5e_base_link", ref
     # back-project each vert with its real (smoothed) depth -> camera frame -> base frame (cm)
     u = verts_px[:, 0].astype(float); v = verts_px[:, 1].astype(float)
     Z = dfill[verts_px[:, 1], verts_px[:, 0]]
+    # DEPTH-OUTLIER REJECTION: a garment lies roughly flat on the table (~+/-15cm of depth). Mask
+    # bleed onto the far background/wall carries depth ~2-3m, which back-projects to vertices 2m+ away
+    # -> a 187cm "span", which the rescale turns into fabric spikes that instantly NaN VBD. Clamp every
+    # vertex depth to a tight band around the garment's median depth so no vertex can fling out.
+    _dband = 0.18
+    Z = np.clip(Z, dmed - _dband, dmed + _dband)
     cam = np.stack([(u - cx) / fx * Z, (v - cy) / fy * Z, Z], 1)
     T = np.array(extr["transforms"][base_frame]["T_base_cam"])
     base = (cam @ T[:3, :3].T + T[:3, 3]) * 100.0                       # -> cm
+    if not (real_volume or two_layer):
+        # LAY THE GARMENT FLAT: single-view depth gives a noisy/crumpled top surface, and any hard
+        # depth clamp piles clamped vertices into a "wall". The real shirt lies flat on the table, so
+        # flatten the table-normal (base z) to a clean plane near the table contact. Keeps the REAL
+        # silhouette footprint + photo texture + pose (faithful) but yields a clean, foldable sheet.
+        base[:, 2] = float(np.percentile(base[:, 2], 20.0))
     uvs = np.stack([u / W, 1.0 - v / H], 1)                            # V-flip for the viewer
     if real_volume:
         # MEASURED-VOLUME garment: the capture already measured the shirt's true volume —
@@ -305,3 +340,55 @@ def find_cloth_mask(scene_dir, cloth_kw, cloth_idx=None):
             pass
     # last resort: whichever mask is present (prefer a non-0 if only one object is cloth-like)
     return os.path.join(md, "0.png") if os.path.exists(os.path.join(md, "0.png")) else None
+
+
+# ----------------------------------------------------------------------------- garment selection
+# A capture may hold SEVERAL garments (2026-09-11: purple shirt + red tee). Every stage used to
+# take objects[0] / masks/0.png; they now agree on ONE selector: TWIN_GARMENT (or an explicit
+# argument) = an object id in outputs/<TS>/scene_layout.json, or a label substring ("purple").
+# Empty -> the first garment-labelled object, else the only non-box object (the old behaviour).
+GARMENT_WORDS = ("shirt", "tee", "pant", "trouser", "garment", "cloth", "towel", "fabric", "sweater")
+_SAM_OUT = "/home/aoloo/sam-3d-objects/outputs"
+
+
+def _obj_label(o):
+    return str((o.get("depth_info") or {}).get("label") or o.get("label") or "").lower()
+
+
+def select_garment(ts, sel=None, lay=None):
+    """Return the scene_layout object the selector names (see module comment)."""
+    import json, os
+    if lay is None:
+        lay = json.load(open(f"{_SAM_OUT}/{ts}/scene_layout.json"))["objects"]
+    if sel is None or str(sel).strip() == "":
+        sel = os.environ.get("TWIN_GARMENT", "").strip()
+    sel = str(sel).strip()
+    if sel:
+        if sel.lstrip("-").isdigit():
+            hit = next((o for o in lay if int(o.get("id", -1)) == int(sel)), None)
+            if hit is None:
+                raise KeyError(f"no object id {sel} in the scene layout for {ts} "
+                               f"(ids: {[o.get('id') for o in lay]})")
+            return hit
+        hits = [o for o in lay if sel.lower() in _obj_label(o)]
+        if len(hits) != 1:
+            raise KeyError(f"garment selector '{sel}' matches {len(hits)} objects in {ts} "
+                           f"(labels: {[_obj_label(o) for o in lay]})")
+        return hits[0]
+    box = next((o for o in lay if "box" in _obj_label(o)), None)
+    for w in GARMENT_WORDS:
+        hit = next((o for o in lay if w in _obj_label(o)), None)
+        if hit is not None:
+            return hit
+    rest = [o for o in lay if o is not box]
+    if len(rest) != 1:
+        raise KeyError(f"no garment in the scene layout for {ts} and {len(rest)} non-box objects "
+                       f"(labels: {[_obj_label(o) for o in lay]}) - set TWIN_GARMENT=<id|label>")
+    return rest[0]
+
+
+def garment_mask_path(ts, sel=None):
+    """masks/<k>.png of the selected garment (k = mask_index, which survives QA drops; else id)."""
+    o = select_garment(ts, sel)
+    k = o.get("mask_index", o.get("id", 0))
+    return f"{_SAM_OUT}/{ts}_full/masks/{k}.png"

@@ -50,6 +50,23 @@ M2CM = 100.0
 GRAVITY = -981.0
 TABLE_TOP = 20.0        # table top plane z (cm) — matches newton_fold's keyframe z-convention
 CLOTH_TOP = TABLE_TOP + 1.0
+
+
+@wp.kernel
+def _stabilize_particle_vel(qd: wp.array(dtype=wp.vec3), vmax: float):
+    """Anti-NaN guard: scrub any non-finite particle velocity to zero and cap the magnitude at vmax.
+    A pin RELEASE (or a self-contact blip on stacked fold layers) can inject a huge velocity spike that
+    grows to NaN over a few substeps; capping it each substep keeps the fold from blowing up while
+    leaving normal-speed cloth motion untouched (vmax is far above any real fold speed)."""
+    i = wp.tid()
+    v = qd[i]
+    finite = (v[0] == v[0]) and (v[1] == v[1]) and (v[2] == v[2])
+    if not finite:
+        qd[i] = wp.vec3(0.0, 0.0, 0.0)
+        return
+    s = wp.length(v)
+    if s > vmax:
+        qd[i] = v * (vmax / s)
 CELL = 2.0              # cloth grid cell (cm)
 ROBOT_Z = 20.0                    # UR5e base at TABLE LEVEL (per user) — mobile-base top flush w/ table
 ROBOT_BASE_XY = (-18.0, 8.0)      # OFF the table, on its mobile base beside it (mobile manipulator)
@@ -134,6 +151,13 @@ class PlanExec:
         self.cell = args.cell
         self.stretch_ke = args.stretch_ke
         self.bend_ke = args.bend_ke
+        self.garment_max_cm = float(getattr(args, "garment_max_cm", 0.0))
+        self.tri_kd = float(getattr(args, "tri_kd", 1.5e-6))
+        self.edge_kd = float(getattr(args, "edge_kd", 1.0e-2))
+        self.speed = max(float(getattr(args, "speed", 1.0)), 0.1)  # >1 = brisker arm motion (compress schedule)
+        self.profile = bool(getattr(args, "profile", False))
+        self.prof = {}
+        self.prof_n = 0
         self.mask_step = getattr(args, "mask_step", 9)
         self.only_fold = getattr(args, "only_fold", None)
 
@@ -155,18 +179,83 @@ class PlanExec:
 
         # --- robot at the base-frame origin, facing +x toward the objects, on a pedestal ---
         self.robot_base = (ROBOT_BASE_XY[0], ROBOT_BASE_XY[1], ROBOT_Z)
-        ur_w3, dof0, n_arm, pinch_local = add_ur5e_gripper(
-            scene, wp.transform(wp.vec3(*self.robot_base), wp.quat_identity()), scale=100.0)
-        self.n_arm = n_arm
-        self.endeffector_id = ur_w3
-        self.endeffector_offset = wp.transform(list(pinch_local), wp.quat_identity())
-        self.ee_off_vec = wp.vec3(*pinch_local)
-        self.grip_dofs = list(range(dof0 + n_arm, dof0 + n_arm + 8))
-        self.free_loop_dofs = list(range(dof0 + n_arm + 8, scene.joint_dof_count))
-        self.grip_closed = np.array([0.781, 0.001, 0.78, -0.756, 0.781, 0.001, 0.78, -0.756])
-        self.grip_open = np.zeros(8)
-        self.bodies_per_world = scene.body_count
-        print(f"[plan] UR5e + 2F-85: wrist3 {ur_w3}, {n_arm} arm dof, pinch {tuple(pinch_local)}", flush=True)
+        self.arm = getattr(args, "arm", "ur5e")
+        _phys = bool(getattr(args, "physical_grasp", False))
+        # PHYSICAL clamp works for the Franka fingers OR the UR5e + Hand-E-style 2-jaw (both are
+        # simple parallel grippers Newton can actually drive). The old UR5e used the 2F-85, a closed
+        # 4-bar linkage Featherstone can't close -> that path falls back to the software pin.
+        self.physical_grip = _phys and self.arm in ("franka", "ur5e")
+        self.base_yaw_deg = float(getattr(args, "base_yaw", 0.0))
+        if _phys and self.arm == "ur5e":
+            # mobile base: bring the UR5e (reach ~0.85m) close enough to reach every grasp, same as
+            # the franka (objects span ~0.34-0.73m in +x from the faithful origin).
+            self.robot_base = (22.0, 12.0, ROBOT_Z)
+        if self.arm == "franka":
+            # Franka in the FAITHFUL scene (objects stay at their cuTAMP-plan REAL positions -- the
+            # scene-build below is untouched). Robot swapped for the validated PHYSICAL grasp path.
+            # The Franka reach is ~0.85m; the UR5e's off-table base put the objects (and the fold's far
+            # edge) at ~0.98m. It's a MOBILE base, so move it closer to the object cluster (objects
+            # unchanged) to bring everything comfortably in reach.
+            self.robot_base = (22.0, 12.0, ROBOT_Z)
+            # Faithful base is at ROBOT_BASE_XY with the objects at +x -> the franka must face +x
+            # (its canonical forward), so NO 180deg flip (that's newton_fold's geometry, not ours).
+            _ang = np.radians(self.base_yaw_deg)
+            rq = wp.quat(0.0, 0.0, float(np.sin(_ang / 2)), float(np.cos(_ang / 2)))
+            self.robot_rq = (0.0, 0.0, float(np.sin(_ang / 2)), float(np.cos(_ang / 2)))
+            dof0 = scene.joint_dof_count
+            asset_path = newton.utils.download_asset("franka_emika_panda")
+            scene.add_urdf(str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
+                           xform=wp.transform(wp.vec3(*self.robot_base), rq),
+                           floating=False, scale=100, enable_self_collisions=False,
+                           collapse_fixed_joints=True, force_show_colliders=False)
+            scene.joint_q[dof0:dof0 + 6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
+            self.n_arm = 7
+            self.endeffector_id = scene.body_count - 3                  # franka hand link (before 2 fingers)
+            self.endeffector_offset = wp.transform([0.0, 0.0, 22.0], wp.quat_identity())
+            self.ee_off_vec = wp.vec3(0.0, 0.0, 22.0)
+            self.grip_dofs = list(range(scene.joint_dof_count - 2, scene.joint_dof_count))
+            self.free_loop_dofs = []
+            self.grip_closed = None; self.grip_open = None
+            # generalized clamp targets (fingers: ~4cm open, 0 closed; overshoot for a tight hold)
+            self.g_open, self.g_close = 4.2, -1.0
+            self.g_open_ref, self.g_close_ref = 4.0, 0.0
+            self.bodies_per_world = scene.body_count
+            print(f"[plan] arm = Franka (PHYSICAL grasp={self.physical_grip}): {self.n_arm} arm dof, "
+                  f"grip dofs {self.grip_dofs}, ee {self.endeffector_id}", flush=True)
+        elif _phys and self.arm == "ur5e":
+            # UR5e + 2-JAW gripper == the REAL robot (UR5e + Robotiq Hand-E, a simple parallel jaw).
+            # Newton drives the jaws shut ON the fabric (physical clamp, no pin) -> reuses the exact
+            # on-contact grasp fix. Tool axis = wrist_3 +y; pinch point ~9cm out along the jaws.
+            from ur5e_jaw_gripper import add_ur5e_jaw_gripper
+            w3, dof0, n_arm, pinch_local, gdofs, op, cp = add_ur5e_jaw_gripper(
+                scene, wp.transform(wp.vec3(*self.robot_base), wp.quat_identity()), scale=100.0)
+            self.n_arm = n_arm                                    # 6 for UR5e
+            self.endeffector_id = w3
+            self.endeffector_offset = wp.transform(list(pinch_local), wp.quat_identity())
+            self.ee_off_vec = wp.vec3(*pinch_local)
+            self.grip_dofs = list(gdofs)
+            self.free_loop_dofs = []
+            self.grip_closed = None; self.grip_open = None
+            # jaws: op=open slide, cp=closed slide (a few mm apart). Overshoot closed to hold.
+            self.g_open_ref, self.g_close_ref = float(op), float(cp)
+            self.g_open = float(op) - 0.5
+            self.g_close = float(cp) + 0.8
+            self.bodies_per_world = scene.body_count
+            print(f"[plan] arm = UR5e + Hand-E JAW (PHYSICAL clamp): {n_arm} arm dof, grip dofs {gdofs}, "
+                  f"open {op:.1f} close {cp:.1f}cm, ee {w3}", flush=True)
+        else:
+            ur_w3, dof0, n_arm, pinch_local = add_ur5e_gripper(
+                scene, wp.transform(wp.vec3(*self.robot_base), wp.quat_identity()), scale=100.0)
+            self.n_arm = n_arm
+            self.endeffector_id = ur_w3
+            self.endeffector_offset = wp.transform(list(pinch_local), wp.quat_identity())
+            self.ee_off_vec = wp.vec3(*pinch_local)
+            self.grip_dofs = list(range(dof0 + n_arm, dof0 + n_arm + 8))
+            self.free_loop_dofs = list(range(dof0 + n_arm + 8, scene.joint_dof_count))
+            self.grip_closed = np.array([0.781, 0.001, 0.78, -0.756, 0.781, 0.001, 0.78, -0.756])
+            self.grip_open = np.zeros(8)
+            self.bodies_per_world = scene.body_count
+            print(f"[plan] UR5e + 2F-85: wrist3 {ur_w3}, {n_arm} arm dof, pinch {tuple(pinch_local)}", flush=True)
 
         # PLAN-DRIVEN positions: place every object EXACTLY where the cuTAMP plan JSON says. The plan
         # is now generated on the REAL layout (translated only for reach — see run_scene_tamp), so the
@@ -178,9 +267,13 @@ class PlanExec:
         plan_xy = {norm_label(k): (float(v[0]) * M2CM, float(v[1]) * M2CM) for k, v in self.initial.items()}
         allxy = np.array(list(plan_xy.values()) + [[bfx, bfy]])
         self.tcx, self.tcy = float(allxy[:, 0].mean()), float(allxy[:, 1].mean())
-        # table sized to sit UNDER the objects only (the robot is off it, on its mobile base)
-        thx = float(np.ptp(allxy[:, 0])) / 2 + 16.0
-        thy = float(np.ptp(allxy[:, 1])) / 2 + 16.0
+        # table sized to sit UNDER the objects (the robot is off it, on its mobile base). The margin
+        # must cover the GARMENT FOOTPRINT, not just object centres: a garment centred at the cluster
+        # edge extends ~half its width past its centre (a ~55cm shirt -> ~28cm), so a small margin lets
+        # it drape off the edge (particles fall to the floor and the fold grasps air). Use a generous
+        # 32cm margin so the largest garment stays fully supported on the table.
+        thx = float(np.ptp(allxy[:, 0])) / 2 + 30.0
+        thy = float(np.ptp(allxy[:, 1])) / 2 + 30.0
         self.tcx = 0.5 * float(allxy[:, 0].min() + allxy[:, 0].max())     # centre on the object cluster
         self.tcy = 0.5 * float(allxy[:, 1].min() + allxy[:, 1].max())
         self.table_hz = 10.0
@@ -191,7 +284,7 @@ class PlanExec:
                             hx=thx, hy=thy, hz=10.0, cfg=cfg, color=wp.vec3(0.80, 0.80, 0.82))
         # VISIBLE mobile-manipulator base: a floor-standing platform (off the table) the UR5e mounts on
         ped_idx = scene.shape_count
-        scene.add_shape_box(-1, wp.transform(wp.vec3(ROBOT_BASE_XY[0], ROBOT_BASE_XY[1], ROBOT_Z / 2),
+        scene.add_shape_box(-1, wp.transform(wp.vec3(self.robot_base[0], self.robot_base[1], ROBOT_Z / 2),
                                              wp.quat_identity()), hx=17.0, hy=17.0, hz=ROBOT_Z / 2, cfg=cfg,
                             color=wp.vec3(0.28, 0.30, 0.34))
 
@@ -228,6 +321,17 @@ class PlanExec:
             v, faces, uvs, _tex = cloth_from_mask(sp["mask_path"], self.capture_dir,
                                                   step=self.mask_step, base_frame=args.base_frame)
             v = v.astype(np.float64)
+            # The garment's absolute SCALE comes from back-projecting the mask with depth, but soft
+            # low-texture fabric gives sparse/noisy depth -> the size can come out too large (e.g. a
+            # 43x56cm reconstruction of a ~35cm child's shirt), which makes it overhang the table and
+            # look oversized. If --garment_max_cm is set, uniformly rescale the garment (about its
+            # centroid, preserving the real SHAPE from the mask) so its largest span == that size.
+            if self.garment_max_cm > 0:
+                span = float(max(np.ptp(v[:, 0]), np.ptp(v[:, 1]), np.ptp(v[:, 2])))
+                if span > 1e-3 and span > self.garment_max_cm:
+                    c = v.mean(axis=0)
+                    v = c + (v - c) * (self.garment_max_cm / span)
+                    print(f"[plan] garment '{nm}': rescaled {span:.0f}cm -> {self.garment_max_cm:.0f}cm max span", flush=True)
             gx, gy = plan_xy[norm_label(nm)]             # place the real garment shape AT its plan pose
             v[:, 0] += gx - v[:, 0].mean()
             v[:, 1] += gy - v[:, 1].mean()
@@ -236,8 +340,8 @@ class PlanExec:
             n = len(v)
             scene.add_cloth_mesh(pos=wp.vec3(0.0), rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0),
                                  vertices=[wp.vec3(*x) for x in v], indices=faces.reshape(-1).tolist(),
-                                 density=0.02, tri_ke=self.stretch_ke, tri_ka=self.stretch_ke, tri_kd=1.5e-6,
-                                 edge_ke=self.bend_ke, edge_kd=1.0e-2, particle_radius=0.8)
+                                 density=0.02, tri_ke=self.stretch_ke, tri_ka=self.stretch_ke, tri_kd=self.tri_kd,
+                                 edge_ke=self.bend_ke, edge_kd=self.edge_kd, particle_radius=0.8)
             bbox = [float(v[:, 0].min()), float(v[:, 0].max()),
                     float(v[:, 1].min()), float(v[:, 1].max())]
             self.garments[norm_label(nm)] = dict(label=nm, p0=part0, n=n, uvs=uvs,
@@ -255,6 +359,7 @@ class PlanExec:
         plan_rigids = [nm for nm in self.initial if not is_garment(nm)]
         self.rigids = {}
         self.rigid_xy = {}
+        self.rigid_hxy = {}                              # each eraser's XY half-extent (cm) for box containment
         self.rigid_hz = 1.5
         for i, plan_nm in enumerate(plan_rigids):
             r = real_rigids[i] if i < len(real_rigids) else None
@@ -277,11 +382,14 @@ class PlanExec:
                     scene.add_shape_mesh(b, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), mesh=mesh,
                                          cfg=cfg, color=wp.vec3(*r["color"]),
                                          scale=wp.vec3(scale, scale, scale))
+                    self.rigid_hxy[nm] = (float(np.ptp(mv[:, 0])) / 2.0 * scale,
+                                          float(np.ptp(mv[:, 1])) / 2.0 * scale)
                     placed = True
                 except Exception as e:
                     print(f"[plan] eraser mesh '{nm}' failed ({e}); box fallback", flush=True)
             if not placed:
                 scene.add_shape_box(b, hx=4.5, hy=2.5, hz=hz, cfg=cfg, color=wp.vec3(*r["color"]))
+                self.rigid_hxy[nm] = (4.5, 2.5)
             self.rigids[nm] = b
             self.rigid_xy[nm] = (rx, ry)
             print(f"[plan] rigid '{nm}' (real mesh={'yes' if placed else 'no'}) @({rx:.0f},{ry:.0f})cm", flush=True)
@@ -299,22 +407,39 @@ class PlanExec:
         # HIGH cloth-table friction so the un-grabbed fabric STAYS on the table while the grabbed
         # flap folds over (the crease forms and the cloth deforms — instead of the whole sheet
         # sliding rigidly). Firm normal contact so it rests flat.
-        self.model.soft_contact_ke = 2.0e4; self.model.soft_contact_kd = 8.0e-2
-        self.model.soft_contact_mu = 1.2; self.model.soft_contact_margin = 1.0
+        if self.physical_grip:
+            # PHYSICAL grasp: finger-cloth friction 0.6 (the value that HELD the pinch through the
+            # lift+fold without exploding -- 0.25 slipped, 1.6 ejected the fabric). Example pinch stiffness.
+            # EXACT reference (example_cloth_franka) contact material: soft_contact_mu 0.25, robot shape mu 1.5.
+            self.model.soft_contact_ke = 1e4; self.model.soft_contact_kd = 1e-2; self.model.soft_contact_mu = 0.25
+            self.model.soft_contact_margin = 0.8
+            mm = self.model.shape_material_mu.numpy(); mm[...] = 1.5
+            self.model.shape_material_mu = wp.array(mm, dtype=self.model.shape_material_mu.dtype, device=self.model.device)
+            _scm = 0.8
+        else:
+            self.model.soft_contact_ke = 2.0e4; self.model.soft_contact_kd = 8.0e-2
+            self.model.soft_contact_mu = 1.2; self.model.soft_contact_margin = 1.0
+            _scm = 1.2
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model, soft_contact_margin=1.2)
+        self.collision_pipeline = newton.CollisionPipeline(self.model, soft_contact_margin=_scm)
         self.contacts = self.collision_pipeline.contacts()
         self.gravity_zero = wp.zeros(1, dtype=wp.vec3)
         self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, GRAVITY), dtype=wp.vec3)
 
         self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.substeps)
+        # Self-contact (keeping folded layers from interpenetrating) is the dominant per-frame cost
+        # (~59% in profiling). Detecting it less often (interval>1) and with smaller buffers cuts that
+        # cost a lot, freeing budget for MESH RESOLUTION + ITERATIONS that actually make the cloth FOLD
+        # (crease + drape) instead of sliding as a stiff plate. Both are exposed as CLI knobs.
+        _sc = int(getattr(args, "self_contact_interval", 1))
+        _scbuf = int(getattr(args, "self_contact_buf", 64))
         self.cloth_solver = SolverVBD(
             self.model, iterations=args.vbd_iters, integrate_with_external_rigid_solver=True,
             particle_self_contact_radius=0.2, particle_self_contact_margin=0.2,
             particle_topological_contact_filter_threshold=1,
             particle_rest_shape_contact_exclusion_radius=0.5, particle_enable_self_contact=True,
-            particle_vertex_contact_buffer_size=64, particle_edge_contact_buffer_size=64,
-            particle_conservative_bound_relaxation=0.5, particle_collision_detection_interval=1)
+            particle_vertex_contact_buffer_size=_scbuf, particle_edge_contact_buffer_size=_scbuf,
+            particle_conservative_bound_relaxation=0.5, particle_collision_detection_interval=_sc)
         if self.model.edge_rest_angle is not None:
             self.model.edge_rest_angle.zero_()
 
@@ -339,6 +464,16 @@ class PlanExec:
         self._setup_render()
 
     # ----------------------------- keyframe schedule (plan-driven) -----------------------------
+    def _apply_speed(self):
+        """Compress every keyframe duration by self.speed so the arm moves at a brisk, natural pace
+        (the raw schedule is deliberately gentle for cloth stability, which reads as slow-motion).
+        A per-keyframe floor keeps each move spread over enough frames to stay smoothly interpolated
+        and gives the fabric a beat to settle after a fold/release."""
+        if abs(self.speed - 1.0) < 1e-6:
+            return
+        d = self.key_poses[:, 0] / self.speed
+        self.key_poses[:, 0] = np.maximum(d, 0.30)
+
     def _fold_block(self, gkey):
         """REAL garment fold — fold in quarters, the way laundry is folded. Each fold grabs a WHOLE
         edge (a coherent flap, not a corner), peels it just off the table, and HINGES it over the
@@ -357,13 +492,14 @@ class PlanExec:
             {"axis": "x", "edge": x0, "to": x1, "hinge": cx, "along": (y0, y1), "mid": cy},
             # fold the -y half over the +y half (of the now half-width garment): grasp y=y0 edge
             {"axis": "y", "edge": y0, "to": y1, "hinge": cy, "along": (cx, x1), "mid": (cx + x1) / 2.0},
-            # THIRD fold (tighter -> ~eighths, fits the box): fold the quarter in half along x again
+            # THIRD fold (final): fold the quarter in half along x again. Stop at 3 folds — a 4th
+            # over-works the garment into a shapeless wad (keeps its shape better at 3).
             {"axis": "x", "edge": cx, "to": x1, "hinge": qx, "along": (cy, y1), "mid": (cy + y1) / 2.0},
         ]
         poses, specs, adaptive = [], {}, set()
         for i, f in enumerate(folds):
             base = len(poses)
-            z_edge = TABLE_TOP + 0.6 + i * 1.6       # grasp just onto the (possibly doubled) fabric
+            z_edge = TABLE_TOP + 0.6 + i * 1.6       # grasp hugging the fabric edge (not above it)
             dist = abs(f["to"] - f["edge"])
             z_ap = TABLE_TOP + min(0.42 * dist, 14.0)  # hinge the flap over the crease, staying LOW
             z_land = TABLE_TOP + 1.2 + i * 1.6
@@ -387,24 +523,34 @@ class PlanExec:
             ]
             specs[base + 2] = {"kind": "edge", "axis": f["axis"], "edge": f["edge"],
                                "along": f["along"], "band": 3.5, "range": (p0, n)}
+            # mark the descend + grasp keyframes ADAPTIVE so the finger PADS are driven onto the ACTUAL
+            # fabric top (dig-in ctop-4), not a fixed z where only the tips touch and the pads clamp air.
+            adaptive.add(base + 1)
+            adaptive.add(base + 2)
         return poses, specs, adaptive
 
-    def _in_box(self, x, y, margin=5.0):
-        """Clamp an XY into the box interior (keep `margin` cm off the walls) so bundles/erasers
-        settle flat on the floor instead of perching on a rim."""
+    def _in_box(self, x, y, half=(0.0, 0.0), wall=2.5, clearance=1.5):
+        """Clamp an XY so the object's FULL footprint (its half-extent `half`) stays inside the box
+        INTERIOR. box_hw is the OUTER half-width, so subtract the wall thickness AND the object's own
+        half-extent (+ clearance): a centre that's inside but an EDGE that crosses the wall is exactly
+        why erasers poked THROUGH the wall."""
         cx, cy = self.box_open[0], self.box_open[1]
-        hx = max(1.0, self.box_hw[0] - margin); hy = max(1.0, self.box_hw[1] - margin)
+        hx = max(0.5, self.box_hw[0] - wall - half[0] - clearance)
+        hy = max(0.5, self.box_hw[1] - wall - half[1] - clearance)
         return cx + float(np.clip(x - cx, -hx, hx)), cy + float(np.clip(y - cy, -hy, hy))
 
     def _place_xy(self, key):
         """Map the cuTAMP in-box arrangement (offset from the plan box centre) onto the REAL box
-        opening, clamped inside the interior. Preserves which object goes where inside the box."""
+        opening, clamped so the object's whole footprint stays inside. The cuTAMP offsets push objects
+        out to the walls, so DAMPEN them (0.55x) toward centre -> the arrangement is preserved but
+        nothing perches on / pokes through a wall."""
+        half = self.rigid_hxy.get(key, (0.0, 0.0))
         p = self.placements.get(key)
         if p is not None:
-            dxp = (float(p["pos"][0]) - float(self.plan_box_center[0])) * M2CM
-            dyp = (float(p["pos"][1]) - float(self.plan_box_center[1])) * M2CM
-            return self._in_box(self.box_open[0] + dxp, self.box_open[1] + dyp)
-        return self.box_open[0], self.box_open[1]
+            dxp = (float(p["pos"][0]) - float(self.plan_box_center[0])) * M2CM * 0.55
+            dyp = (float(p["pos"][1]) - float(self.plan_box_center[1])) * M2CM * 0.55
+            return self._in_box(self.box_open[0] + dxp, self.box_open[1] + dyp, half=half)
+        return self._in_box(self.box_open[0], self.box_open[1], half=half)
 
     def _rigid_block(self, nm):
         """Pick a rigid (eraser) from its real spot and Place it at the cuTAMP placement in the box."""
@@ -434,7 +580,10 @@ class PlanExec:
         g = self.garments[gkey]
         cx = (g["bbox"][0] + g["bbox"][1]) / 2.0
         cy = (g["bbox"][2] + g["bbox"][3]) / 2.0           # fold gathers the garment near its flat centre
-        px, py = self._place_xy(gkey)
+        # A folded garment nearly fills the box, so it must go in the box CENTRE — the cuTAMP offset
+        # placement (tuned for small objects) shoves the big bundle against a wall, where it clips
+        # through the thin box mesh. Centre it so it settles inside the walls, not through them.
+        px, py = self.box_open[0], self.box_open[1]
         q = DOWN_Q
         ZHI = 42.0
         zgrab = TABLE_TOP + 2.0
@@ -475,12 +624,13 @@ class PlanExec:
             poses += block
             poses += [[1.5, self.tcx, self.tcy, 44.0, *DOWN_Q, OPEN]]
             self.key_poses = np.array(poses, dtype=np.float32)
+            self._apply_speed()
             self.key_times = np.cumsum(self.key_poses[:, 0])
             self.targets = self.key_poses[:, 1:]
             self.target = self.targets[0]
             self.pose_reach = np.full(len(self.targets), self.max_reach, dtype=np.float32)
             self.total_time = float(self.key_times[-1])
-            print(f"[plan] ONLY_FOLD({self.only_fold}): {len(self.targets)} kf, {self.total_time:.0f}s", flush=True)
+            print(f"[plan] ONLY_FOLD({self.only_fold}): {len(self.targets)} kf, {self.total_time:.0f}s (speed {self.speed:g}x)", flush=True)
             return
         folded, placed, i = set(), set(), 0
         acts = self.actions
@@ -518,6 +668,7 @@ class PlanExec:
         # park pose at the end (reachable retreat above the table centre)
         poses += [[1.5, self.tcx, self.tcy, 44.0, *DOWN_Q, OPEN]]
         self.key_poses = np.array(poses, dtype=np.float32)
+        self._apply_speed()
         self.key_times = np.cumsum(self.key_poses[:, 0])
         self.targets = self.key_poses[:, 1:]
         self.target = self.targets[0]
@@ -567,7 +718,66 @@ class PlanExec:
             wp.copy(self.J_flat[i * in_dim:(i + 1) * in_dim], joint_qd.grad)
             tape.zero()
 
+    def _exec_control(self, state_in):
+        """Franka: follow the cuRobo joint trajectory + the close-hold-move gripper latch (ported from
+        newton_fold's validated physical-grasp exec). The pads clamp only once the arm ARRIVES at the
+        cloth, stay shut through the carry, and open at the release."""
+        i = int(np.clip(np.searchsorted(self.exec_t, self.sim_time), 0, len(self.exec_t) - 1))
+        qt = self.exec_q[i]; self.cur_grip = float(self.exec_g[i])
+        q = state_in.joint_q.numpy()
+        dq = np.zeros(self.model.joint_dof_count)
+        na = self.n_arm
+        g0, g1 = self.grip_dofs
+        closing_cmd = self.cur_grip < 0.4
+        arm_arrived = float(np.linalg.norm(qt - q[:na])) < 0.15
+        if not closing_cmd:
+            self._grasp_latched = False
+        elif arm_arrived:
+            self._grasp_latched = True
+        do_close = bool(closing_cmd and getattr(self, "_grasp_latched", False))
+        g_target = -1.0 if do_close else 4.2       # clamp HARD while grasped; else open FULLY (pads clear the fabric)
+        g_gain = 4.0 if do_close else 5.0          # open fast so the fabric is let go cleanly
+        dq[g0] = (g_target - q[g0]) * g_gain; dq[g1] = (g_target - q[g1]) * g_gain
+        # DWELL on BOTH ends: hold the arm still while the pads finish SHUTTING (grasp) AND while they
+        # finish OPENING on release -> the fabric/eraser DROPS before the arm moves, so it is never
+        # dragged/carried after a drop (the sticking you saw).
+        pads_open = min(q[g0], q[g1]) > 3.2
+        if do_close and max(q[g0], q[g1]) > 0.3:
+            pass                                              # closing: freeze until shut
+        elif (not closing_cmd) and (not pads_open):
+            pass                                              # RELEASE: freeze until the pads open + object drops
+        else:
+            # SMOOTH tracking: feed-forward the cuRobo trajectory VELOCITY (so the arm moves AT the
+            # planned speed instead of a laggy catch-up) + a small position correction. Pure (qt-q)
+            # drive read as jerky. Segments are position-continuous, so a forward difference is clean.
+            i2 = min(i + 1, len(self.exec_q) - 1)
+            dt_c = max(1e-3, float(self.exec_t[i2] - self.exec_t[i]))
+            vff = (self.exec_q[i2] - self.exec_q[i]) / dt_c
+            dq[:na] = vff + (qt - q[:na]) * 3.0
+        self.target_joint_qd.assign(dq.astype(np.float32))
+        self._cur_interval = int(np.clip(np.searchsorted(self.key_times, self.sim_time), 0, len(self.targets) - 1))
+        self.target = self.targets[self._cur_interval]
+        # ERASER (rigid) grasp: attach ONLY once the fingers have ARRIVED ON the eraser (pinch within
+        # ~9cm) and closed -> a small, correct offset so it's carried BETWEEN the pads, not floating.
+        # Release (drop at the placement) when the trajectory commands OPEN.
+        spec = self.kf_spec.get(self._cur_interval)
+        if self.rigid_grasp is None and do_close and spec is not None and spec.get("kind") == "rigid":
+            bid = spec["body"]; pinch = self._ee_pinch(state_in)
+            epos = state_in.body_q.numpy()[bid, :3]
+            if float(np.linalg.norm(pinch - epos)) < 9.0:
+                self.rigid_grasp = {"body": bid, "off": (epos - pinch).astype(np.float64)}
+                self._active_rigid_spec = spec
+                print(f"[plan] physical GRASP rigid '{spec['name']}' (pinch-eraser "
+                      f"{float(np.linalg.norm(pinch - epos)):.1f}cm) t={self.sim_time:.1f}s", flush=True)
+        elif self.rigid_grasp is not None and not closing_cmd:
+            rs = getattr(self, "_active_rigid_spec", None)
+            if rs is not None:
+                self._release_rigid(rs); self._active_rigid_spec = None
+
     def _control(self, state_in):
+        if getattr(self, "exec_mode", False):
+            self._exec_control(state_in)
+            return
         interval = int(np.searchsorted(self.key_times, self.sim_time))
         interval = min(interval, len(self.targets) - 1)
         self.target = self.targets[interval]
@@ -593,7 +803,13 @@ class PlanExec:
             near = (pq[:, 0] - tgt[0]) ** 2 + (pq[:, 1] - tgt[1]) ** 2 < 36.0
             if near.any():
                 ctop = float(pq[near, 2].max())
-                tgt[2] = float(np.clip(ctop + 0.3, CLOTH_TOP, 42.0))
+                if self.physical_grip:
+                    # CLAMP needs the finger PADS (not just the [0,0,22] tips) on the fabric. The tips
+                    # sit below the pads, so drive the tips ~4cm BELOW the cloth top -> the pads close
+                    # ON the cloth instead of clamping air above it (the "dry run" you saw).
+                    tgt[2] = float(np.clip(ctop - 4.0, TABLE_TOP - 3.0, 42.0))
+                else:
+                    tgt[2] = float(np.clip(ctop + 0.3, CLOTH_TOP, 42.0))
         wp.launch(compute_ee_delta, dim=1,
                   inputs=[state_in.body_q, self.endeffector_offset, self.endeffector_id,
                           self.bodies_per_world, wp.transform(*tgt)], outputs=[self.ee_delta])
@@ -611,10 +827,66 @@ class PlanExec:
         dq_null = N @ (self.arm_nominal - q_arm) * 0.7
         delta_q = np.zeros(self.model.joint_dof_count)
         delta_q[:na] = dq_pos + dq_null
+        if self.physical_grip:
+            # REFERENCE-STYLE physical CLAMP (example_cloth_franka): the franka fingers physically clamp
+            # a whole REGION of the fabric (no pin, no thin-edge drag), so it folds as a coherent flap.
+            # Close only once the EE has ARRIVED at the target (no mid-air clamp); hold through the drag;
+            # open FULLY on release with a dwell so the fabric/eraser DROPS before the arm moves.
+            g0, g1 = self.grip_dofs
+            qj = state_in.joint_q.numpy()
+            grip_cmd_closed = float(self.target[-1]) < 0.4
+            # ABSOLUTE arrival gate: close ONLY once the real finger tip has reached the actual grasp
+            # point -- correct XY *and* down at the fabric. The old test used the EASED interpolation
+            # delta, which is ~0 for the whole segment, so the pads shut the instant the CLOSE keyframe
+            # began (mid-air, before the descent finished -> "grasps in the air then moves down closed",
+            # and a shut gripper can never take the cloth). Measuring EE_tip -> FINAL target instead
+            # keeps the fingers OPEN through the entire descent and fires the clamp only on contact.
+            ee_tip = self._ee_pinch(state_in)
+            f_xy = np.array(self.target[:2], float)
+            d_xy = f_xy - rb; rf = float(np.linalg.norm(d_xy))
+            if rf > mr:
+                f_xy = rb + d_xy / rf * mr
+            ftgt = np.array([f_xy[0], f_xy[1], float(tgt[2])])   # tgt[2] already dug-in at grasp keyframes
+            arm_arrived = float(np.linalg.norm(ee_tip - ftgt)) < 4.0
+            self._last_arrive_d = float(np.linalg.norm(ee_tip - ftgt))
+            if not grip_cmd_closed:
+                self._clamp_latched = False
+            elif arm_arrived:
+                if not getattr(self, "_clamp_latched", False):
+                    print(f"[plan] CLAMP arrived t={self.sim_time:.1f}s tip=({ee_tip[0]:.0f},{ee_tip[1]:.0f},{ee_tip[2]:.0f}) "
+                          f"grasp=({ftgt[0]:.0f},{ftgt[1]:.0f},{ftgt[2]:.0f}) d={self._last_arrive_d:.1f}cm", flush=True)
+                self._clamp_latched = True
+            do_clamp = bool(grip_cmd_closed and getattr(self, "_clamp_latched", False))
+            g_target = self.g_close if do_clamp else self.g_open   # clamp HARD; else open FULLY
+            ggain = 4.0 if do_clamp else 5.0
+            delta_q[g0] = (g_target - qj[g0]) * ggain; delta_q[g1] = (g_target - qj[g1]) * ggain
+            # gripper-agnostic closure fraction: 0 = fully open, 1 = fully shut (works for the franka
+            # fingers AND the UR5e jaws, whose slide sign is opposite).
+            qg = 0.5 * (qj[g0] + qj[g1])
+            frac = (qg - self.g_open_ref) / (self.g_close_ref - self.g_open_ref + 1e-6)
+            jaws_shut = frac > 0.85
+            jaws_open = frac < 0.15
+            if (do_clamp and not jaws_shut) or ((not grip_cmd_closed) and (not jaws_open)):
+                delta_q[:na] = 0.0                       # DWELL: hold arm still while pads shut / open
+            # ERASER: attach once the fingers have ARRIVED on it (small offset -> held, not floating)
+            spec = self.kf_spec.get(self._cur_interval)
+            if self.rigid_grasp is None and do_clamp and spec is not None and spec.get("kind") == "rigid":
+                bid = spec["body"]; pinch = self._ee_pinch(state_in)
+                epos = state_in.body_q.numpy()[bid, :3]
+                if float(np.linalg.norm(pinch - epos)) < 9.0:
+                    self.rigid_grasp = {"body": bid, "off": (epos - pinch).astype(np.float64)}
+                    self._active_rigid_spec = spec
+                    print(f"[plan] physical GRASP rigid '{spec['name']}' t={self.sim_time:.1f}s", flush=True)
+            elif self.rigid_grasp is not None and not grip_cmd_closed:
+                rs = getattr(self, "_active_rigid_spec", None)
+                if rs is not None:
+                    self._release_rigid(rs); self._active_rigid_spec = None
         self.target_joint_qd.assign(delta_q.astype(np.float32))
 
     # ----------------------------- grasp / pin (range-aware) -----------------------------
     def _grasp(self):
+        if self.physical_grip:
+            return                       # physical grasp: fingers hold the cloth by CONTACT (no pin)
         spec = self.kf_spec.get(self._cur_interval)
         if spec is None:
             return
@@ -638,12 +910,16 @@ class PlanExec:
             # the fold-1 result — a fixed line from the original bbox missed the moved fabric).
             ax = 0 if spec["axis"] == "x" else 1
             vals = sub[:, ax]
-            thr = float(np.percentile(vals, 14.0))                # thin edge -> the REST is free to deform
+            # WIDE band (was a thin 14% edge). The July-21 fold kept its shape because the gripper held
+            # a whole REGION of fabric; a thin-edge pin drags a few particles and lets the rest crumple
+            # (loses shape after a few folds). Pin ~45% of the flap being folded so a coherent sheet
+            # moves together and the garment stays garment-shaped.
+            thr = float(np.percentile(vals, 45.0))
             local = np.where(vals <= thr)[0]
-            if len(local) < 6:
-                local = np.argsort(vals)[:max(16, int(0.12 * len(sub)))]
-            elif len(local) > 70:                                 # pin only the edge, not a big rigid chunk
-                local = local[np.argsort(vals[local])[:70]]
+            if len(local) < 8:
+                local = np.argsort(vals)[:max(30, int(0.42 * len(sub)))]
+            elif len(local) > 260:                                # cap so it stays a flap, not the whole cloth
+                local = local[np.argsort(vals[local])[:260]]
         else:                                                     # legacy point pinch
             local = np.argsort(np.linalg.norm(sub[:, :2] - pinch[:2], axis=1))[:40]
         idx = local + p0
@@ -662,6 +938,14 @@ class PlanExec:
               f"t={self.sim_time:.1f}s fingertip z={pinch[2]:.1f} cloth z={pq[idx,2].mean():.1f} (gap {gap:+.1f})", flush=True)
 
     def _release(self):
+        # GENTLE release: zero the freed particles' velocity so the stretch the pin held doesn't snap
+        # them into a spike (the fold-2 release NaN). Restoring inv_mass alone let them fling.
+        if self.pin_idx is not None:
+            idx = self.pin_idx.numpy()
+            for st in (self.state_0, self.state_1):
+                qd = st.particle_qd.numpy()
+                qd[idx] = 0.0
+                st.particle_qd.assign(qd)
         self.model.particle_inv_mass.assign(self.orig_inv_mass)
         self.grasp_active = False
         print(f"[plan] RELEASE t={self.sim_time:.1f}s", flush=True)
@@ -674,9 +958,17 @@ class PlanExec:
     def _grasp_rigid(self, spec):
         bid = spec["body"]
         pinch = self._ee_pinch(self.state_0)
-        off = self.state_0.body_q.numpy()[bid, :3] - pinch
-        self.rigid_grasp = {"body": bid, "off": off.astype(np.float64)}
-        print(f"[plan] GRASP rigid '{spec['name']}' t={self.sim_time:.1f}s", flush=True)
+        # Hold the object CENTERED directly under the fingertip (hanging just below it), instead of
+        # freezing whatever offset it happened to have at grasp time -> it looked like the gripper was
+        # holding the cup by one wall / off to the side. A clean centered offset reads as a real pick.
+        hz = float(getattr(self, "rigid_hz", 1.5))
+        off = np.array([0.0, 0.0, -(hz + 1.0)], dtype=np.float64)
+        self.rigid_grasp = {"body": bid, "off": off}
+        newp = (pinch + off)
+        for st in (self.state_0, self.state_1):
+            bq = st.body_q.numpy(); bq[bid, :3] = newp; st.body_q.assign(bq)
+        self.rigid_pose[bid][:3] = newp
+        print(f"[plan] GRASP rigid '{spec['name']}' t={self.sim_time:.1f}s (centered under tip)", flush=True)
 
     def _release_rigid(self, spec):
         px, py, pz = spec["place"]
@@ -689,6 +981,8 @@ class PlanExec:
         print(f"[plan] PLACE rigid '{spec['name']}' -> ({px:.0f},{py:.0f})cm t={self.sim_time:.1f}s", flush=True)
 
     def _update_grasp(self):
+        if getattr(self, "exec_mode", False):
+            return                       # franka: cloth held by contact, eraser grasp handled in _exec_control (arrival-gated)
         grip = float(self.target[-1])
         if self.prev_grip > 0.4 and grip <= 0.4:            # close
             spec = self.kf_spec.get(self._cur_interval)
@@ -707,8 +1001,16 @@ class PlanExec:
         self.prev_grip = grip
 
     # ----------------------------- coupled simulate + render -----------------------------
+    def _prof_add(self, key, dt):
+        self.prof[key] = self.prof.get(key, 0.0) + dt
+
     def _simulate(self):
+        prof = self.profile
+        if prof:
+            wp.synchronize(); _t0 = time.perf_counter()
         self.cloth_solver.rebuild_bvh(self.state_0)
+        if prof:
+            wp.synchronize(); self._prof_add("bvh", time.perf_counter() - _t0)
         for _ in range(self.substeps):
             self.state_0.clear_forces(); self.state_1.clear_forces()
             pc = self.model.particle_count
@@ -716,7 +1018,11 @@ class PlanExec:
             self.model.gravity.assign(self.gravity_zero)
             self.model.shape_contact_pair_count = 0
             self.state_0.joint_qd.assign(self.target_joint_qd)
+            if prof:
+                wp.synchronize(); _t0 = time.perf_counter()
             self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            if prof:
+                wp.synchronize(); self._prof_add("robot", time.perf_counter() - _t0)
             self.state_0.particle_f.zero_()
             self.model.particle_count = pc
             self.model.gravity.assign(self.gravity_earth)
@@ -727,16 +1033,28 @@ class PlanExec:
                 bq[self.rigid_grasp["body"], :3] = newp
                 self.state_1.body_q.assign(bq)
                 self.rigid_pose[self.rigid_grasp["body"]][:3] = newp   # render follows the carry
-            if self.grasp_active and self.pin_idx is not None:
+            if self.grasp_active and self.pin_idx is not None and not self.physical_grip:
                 wp.launch(pin_to_ee, dim=len(self.pin_idx),
                           inputs=[self.state_1.body_q, self.endeffector_id, self.ee_off_vec,
                                   self.pin_idx, self.pin_off],
                           outputs=[self.state_0.particle_q, self.state_0.particle_qd])
+            if prof:
+                wp.synchronize(); _t0 = time.perf_counter()
             self.collision_pipeline.collide(self.state_0, self.contacts)
+            if prof:
+                wp.synchronize(); self._prof_add("collide", time.perf_counter() - _t0); _t0 = time.perf_counter()
             self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            # anti-NaN velocity guard on the freshly-stepped cloth (state_1): cap spikes before they grow
+            if self.model.particle_count > 0:
+                wp.launch(_stabilize_particle_vel, dim=self.model.particle_count,
+                          inputs=[self.state_1.particle_qd, 800.0])
+            if prof:
+                wp.synchronize(); self._prof_add("cloth", time.perf_counter() - _t0)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _pose_gripper(self):
+        if self.grip_closed is None or getattr(self, "exec_mode", False):
+            return                                            # franka: gripper is driven in _exec_control
         grip = float(self.target[-1]) if self.sim_time < self.total_time else OPEN
         tgt = self.grip_closed if grip <= 0.4 else self.grip_open
         q = self.state_0.joint_q.numpy()
@@ -748,10 +1066,21 @@ class PlanExec:
         eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
     def step(self):
-        self._control(self.state_0)
-        self._update_grasp()
-        self._simulate()
-        self._pose_gripper()
+        if self.profile:
+            wp.synchronize(); _t0 = time.perf_counter()
+            self._control(self.state_0)
+            wp.synchronize(); self._prof_add("control", time.perf_counter() - _t0)
+            self._update_grasp()
+            self._simulate()
+            wp.synchronize(); _t0 = time.perf_counter()
+            self._pose_gripper()
+            wp.synchronize(); self._prof_add("gripper", time.perf_counter() - _t0)
+            self.prof_n += 1
+        else:
+            self._control(self.state_0)
+            self._update_grasp()
+            self._simulate()
+            self._pose_gripper()
         self.sim_time += self.frame_dt
 
     def _setup_render(self):
@@ -773,6 +1102,51 @@ class PlanExec:
         self.tex_img = load_texture(os.path.join(self.capture_dir, "rgb.png"))
         self.g_uv = {k: wp.array(g["uvs"].astype(np.float32), dtype=wp.vec2) for k, g in self.garments.items()}
         self.g_fc = {k: wp.array(g["faces"].astype(np.int32), dtype=wp.int32) for k, g in self.garments.items()}
+
+    def export_plan(self, path):
+        """Stage 1 (franka): write the fold+pack keyframe fingertip poses + obstacles in the FRANKA-BASE
+        frame (metres) for cuRobo. Transform = R_base^T @ (world - base) using the ACTUAL base pose
+        (translation + yaw) -- matches how Newton places the arm, so cuRobo plans in the right frame."""
+        import json
+        base = np.array(self.robot_base, dtype=float)
+        theta = np.radians(self.base_yaw_deg)             # must match the franka placement rotation
+        c_, s_ = np.cos(theta), np.sin(theta)
+
+        def to_franka(world_xyz):
+            d = np.asarray(world_xyz, float) - base
+            return np.array([d[0] * c_ + d[1] * s_, -d[0] * s_ + d[1] * c_, d[2]]) / 100.0
+
+        kfs = []
+        for row in self.key_poses:
+            p = to_franka([row[1], row[2], row[3]])
+            if p[2] < 0.02:
+                p[2] -= 0.06                              # dig-in: fingers reach INTO the fabric/object
+            kfs.append({"dur": float(row[0]), "fingertip_m": p.tolist(),
+                        "gripper": "open" if float(row[8]) > 0.4 else "closed"})
+        table_top_franka = (TABLE_TOP - base[2]) / 100.0
+        obstacles = [{"name": "table", "center_m": [0.5, 0.0, round(table_top_franka - 0.1, 4)],
+                      "dims_m": [1.6, 1.6, 0.2]}]
+        json.dump({"keyframes": kfs, "obstacles": obstacles,
+                   "down_quat_wxyz": [0.0, 1.0, 0.0, 0.0], "ee_offset_z": 0.105,
+                   "home_js": [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741]},
+                  open(path, "w"), indent=2)
+        print(f"[plan] exported {len(kfs)} keyframes + {len(obstacles)} obstacles -> {path}", flush=True)
+
+    def load_exec_plan(self, path):
+        """Stage 3 (franka): load a cuRobo joint trajectory + gripper events for exec_mode."""
+        import json
+        traj = json.load(open(path))
+        ts, qs, gs = [], [], []
+        t = 0.0
+        for s in traj["segments"]:
+            q = s["q"]; dur = float(s["dur"]); grip = 0.02 if s["gripper"] == "closed" else 0.8
+            n = len(q)
+            for j, qj in enumerate(q):
+                ts.append(t + dur * (j / (n - 1) if n > 1 else 0.0)); qs.append(qj); gs.append(grip)
+            t += dur
+        self.exec_t = np.array(ts); self.exec_q = np.array(qs, np.float64); self.exec_g = np.array(gs)
+        self.exec_total = t; self.exec_mode = True; self.cur_grip = 0.8
+        print(f"[plan] EXEC cuRobo trajectory: {len(ts)} waypoints over {t:.1f}s", flush=True)
 
     def export_ee_traj(self, path):
         """Write the fold+pack EE (TCP) waypoints in the ur5e_base_link frame (metres) + gripper
@@ -819,26 +1193,60 @@ def main():
     ap.add_argument("--base_frame", default="ur5e_base_link")
     ap.add_argument("--substeps", type=int, default=8)
     ap.add_argument("--vbd_iters", type=int, default=10)
+    ap.add_argument("--speed", type=float, default=1.0, help="arm-motion speed-up; compresses the keyframe schedule (normal=1.0; brisker=2.2)")
+    ap.add_argument("--profile", action="store_true", help="time each phase of the hot loop (control/bvh/robot/collide/cloth/gripper/render/nan) and print a per-frame breakdown")
+    ap.add_argument("--self_contact_interval", type=int, default=1, help="detect cloth self-contact every N substeps; >1 cuts the dominant per-frame cost (frees budget for fold fidelity)")
+    ap.add_argument("--self_contact_buf", type=int, default=64, help="cloth self-contact buffer size (smaller = cheaper)")
+    ap.add_argument("--garment_max_cm", type=float, default=0.0, help="rescale each garment so its largest span == this many cm (0 = keep depth-reconstructed size); fixes oversized/off-table garments from noisy fabric depth")
     ap.add_argument("--reach", type=float, default=86.0, help="EE reach clamp (cm) from the base")
     ap.add_argument("--mask_step", type=int, default=9, help="cloth_from_mask sampling stride (px); smaller = finer/more realistic, more particles")
     ap.add_argument("--cell", type=float, default=2.0, help="[unused: legacy grid] cloth grid cell (cm)")
-    ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH stiffness (deformable)")
-    ap.add_argument("--bend_ke", type=float, default=3.0, help="cloth BEND stiffness (low = drapes/folds)")
+    # NORMAL (original) cloth defaults — this is the baseline the pipeline shipped with. The
+    # shape-holding "adjusted" values are: --stretch_ke 3e5 --bend_ke 12 --tri_kd 1e-3 --edge_kd 5e-2
+    ap.add_argument("--stretch_ke", type=float, default=1.0e4, help="cloth STRETCH (membrane) stiffness (normal=1e4; adjusted=3e5 for inextensible shape-holding fabric)")
+    ap.add_argument("--bend_ke", type=float, default=3.0, help="cloth BEND stiffness (normal=3; adjusted=12)")
+    ap.add_argument("--tri_kd", type=float, default=1.5e-6, help="cloth triangle (stretch) damping (normal=1.5e-6; adjusted=1e-3)")
+    ap.add_argument("--edge_kd", type=float, default=1.0e-2, help="cloth edge (bend) damping (normal=1e-2; adjusted=5e-2)")
     ap.add_argument("--only_fold", default=None, help="debug: schedule ONLY this garment's fold (fast fidelity iteration)")
     ap.add_argument("--viewer", default="gl", choices=["gl", "null"])
     ap.add_argument("--hold", type=float, default=600.0)
     ap.add_argument("--render_every", type=int, default=2)
     ap.add_argument("--screenshot", default=None, help="PNG base; milestone frames saved at each release")
+    ap.add_argument("--frames_dir", default=None, help="dump every rendered frame here as frame_%06d.png (for video)")
     ap.add_argument("--export_ee_traj", default=None, help="write the fold+pack EE trajectory (base frame, m) then exit")
+    # --- Franka + PHYSICAL grasp (cuRobo-planned) path in the FAITHFUL scene ---
+    ap.add_argument("--arm", default="ur5e", choices=["ur5e", "franka"], help="ur5e (2F-85 + pin) or franka (physical contact grasp via cuRobo)")
+    ap.add_argument("--physical_grasp", action="store_true", help="franka: pinch+hold the cloth by CONTACT+friction (no pin)")
+    ap.add_argument("--base_yaw", type=float, default=0.0, help="extra base-facing yaw (deg) for the franka")
+    ap.add_argument("--export_plan", default=None, help="stage 1: write the fold+pack keyframe poses + obstacles (franka-base frame) for cuRobo, then exit")
+    ap.add_argument("--exec_plan", default=None, help="stage 3: execute a cuRobo joint trajectory (from curobo_fold_plan.py)")
     ap.add_argument("--cam", default=None)
     args = ap.parse_args()
 
     wp.init()
+    # Newton's GL shape shader bakes distance fog in WORLD units: fog_start=20, fog_end=200.
+    # Franka demos are metre-scale so tabletop objects never reach 20 m and fog never shows.
+    # Our scene is CM-scale with the camera ~55 cm out, so the whole table sits inside 20-200 cm
+    # of fog -> a grey haze/veil washes everything toward sky_lower. Push fog past the scene so
+    # it renders crisp (the way the metre-scale demos look).
+    if args.viewer == "gl":
+        try:
+            from newton._src.viewer.gl import shaders as _sh
+            _sh.shape_fragment_shader = (_sh.shape_fragment_shader
+                .replace("float fog_start = 20.0;", "float fog_start = 100000.0;")
+                .replace("float fog_end   = 200.0;", "float fog_end   = 200000.0;"))
+        except Exception:
+            pass
     viewer = ViewerGL() if args.viewer == "gl" else ViewerNull(num_frames=10**9)
     ex = PlanExec(viewer, args)
     if args.export_ee_traj:
         ex.export_ee_traj(args.export_ee_traj)
         return
+    if args.export_plan:                                 # stage 1 (franka): export poses for cuRobo
+        ex.export_plan(args.export_plan)
+        return
+    if args.exec_plan:                                   # stage 3 (franka): run cuRobo joint trajectory
+        ex.load_exec_plan(args.exec_plan)
     if args.viewer == "gl":
         if args.cam:
             cx, cy, cz, cp, cyaw = (float(v) for v in args.cam.split(","))
@@ -846,7 +1254,8 @@ def main():
             cx, cy, cz, cp, cyaw = ex.tcx - 55.0, ex.tcy - 70.0, 60.0, -32.0, 55.0
         viewer.set_camera(wp.vec3(cx, cy, cz), cp, cyaw)
 
-    n_frames = int(ex.total_time * ex.fps) + 60
+    sched_time = ex.exec_total if getattr(ex, "exec_mode", False) else ex.total_time
+    n_frames = int(sched_time * ex.fps) + 60
     shots, base = {}, (args.screenshot.replace(".png", "") if args.screenshot else None)
     if base:
         grips = ex.key_poses[:, -1]
@@ -854,13 +1263,40 @@ def main():
         for k, i in enumerate(rels):
             shots[int(ex.key_times[i] * ex.fps)] = f"{base}_step{k+1}.png"
         shots[3] = f"{base}_start.png"
+    vid_i = 0
+    if args.frames_dir:
+        os.makedirs(args.frames_dir, exist_ok=True)
     print(f"[plan] running {n_frames} frames ({ex.total_time:.0f}s schedule)...", flush=True)
+    prof_wall = 0.0
     for f in range(n_frames):
+        if args.profile:
+            wp.synchronize(); _fw0 = time.perf_counter()
         ex.step()
         if f % args.render_every == 0 or f in shots:
+            if args.profile:
+                wp.synchronize(); _t0 = time.perf_counter()
             ex.render()
+            if args.profile:
+                wp.synchronize(); ex._prof_add("render", time.perf_counter() - _t0)
+            if args.frames_dir and args.viewer == "gl":
+                from PIL import Image
+                Image.fromarray(viewer.get_frame().numpy()).save(
+                    os.path.join(args.frames_dir, f"frame_{vid_i:06d}.png"))
+                vid_i += 1
+        if args.profile:
+            wp.synchronize(); _t0 = time.perf_counter()
         q = ex.state_0.particle_q.numpy()
-        if not np.isfinite(q).all():
+        naninf = not np.isfinite(q).all()
+        if args.profile:
+            wp.synchronize(); ex._prof_add("nan_check", time.perf_counter() - _t0)
+            prof_wall += time.perf_counter() - _fw0
+            if ex.prof_n > 0 and f % 60 == 59:
+                n = ex.prof_n
+                parts = " ".join(f"{k}={1000*v/n:.1f}ms" for k, v in sorted(ex.prof.items(), key=lambda kv: -kv[1]))
+                fps = n / prof_wall if prof_wall > 0 else 0
+                rt = fps / ex.fps
+                print(f"[prof] frame {f}: {1000*prof_wall/n:.1f}ms/frame ({fps:.1f} fps, {rt:.2f}x real-time) | {parts}", flush=True)
+        if naninf:
             print(f"[plan] NaN at frame {f} (t={ex.sim_time:.1f}s)", flush=True)
             break
         if base and f in shots and args.viewer == "gl":

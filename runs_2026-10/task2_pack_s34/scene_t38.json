@@ -1,0 +1,72 @@
+{
+ "box": {
+  "inner_cm": [
+   38,
+   38
+  ],
+  "h_cm": 12
+ },
+ "garments": [
+  {
+   "name": "shirt",
+   "kind": "shirt",
+   "flat_cm": [
+    30,
+    33
+   ],
+   "layer_cm": 0.8,
+   "min_level": "half"
+  },
+  {
+   "name": "towelA",
+   "kind": "towel",
+   "flat_cm": [
+    40,
+    30
+   ],
+   "layer_cm": 0.6,
+   "on": "shirt",
+   "level": "quarter"
+  },
+  {
+   "name": "towelB",
+   "kind": "towel",
+   "flat_cm": [
+    34,
+    24
+   ],
+   "layer_cm": 0.6,
+   "on": "towelA",
+   "level": "half_y"
+  }
+ ],
+ "rigids": [
+  {
+   "name": "block1",
+   "dims_cm": [
+    10,
+    6,
+    4
+   ],
+   "side": "right"
+  },
+  {
+   "name": "block2",
+   "dims_cm": [
+    8,
+    8,
+    6
+   ],
+   "side": "right"
+  },
+  {
+   "name": "block3",
+   "dims_cm": [
+    12,
+    5,
+    3
+   ],
+   "side": "right"
+  }
+ ]
+}

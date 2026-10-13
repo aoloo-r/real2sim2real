@@ -1,0 +1,205 @@
+{
+ "task": "pack_many",
+ "box": {
+  "inner_cm": [
+   38,
+   38
+  ],
+  "h_cm": 12
+ },
+ "levels": {
+  "shirt": "half",
+  "towelA": "quarter",
+  "towelB": "half_y"
+ },
+ "rot90": {
+  "shirt": false,
+  "towelA": true,
+  "towelB": false
+ },
+ "rigids_first": false,
+ "layout": {
+  "towelB": {
+   "level": "half_y",
+   "rot90": false,
+   "flat_cm": [
+    34,
+    24
+   ],
+   "footprint_cm": [
+    36.0,
+    14.0
+   ],
+   "thick_cm": 1.2,
+   "dx": 0.0,
+   "dy": -11.0,
+   "z_on": 0.0,
+   "validated": true
+  },
+  "towelA": {
+   "level": "quarter",
+   "rot90": true,
+   "flat_cm": [
+    30,
+    40
+   ],
+   "footprint_cm": [
+    17.0,
+    22.0
+   ],
+   "thick_cm": 2.4,
+   "dx": -9.5,
+   "dy": 7.0,
+   "z_on": 0.0,
+   "validated": true,
+   "mirrored_fold": true
+  },
+  "shirt": {
+   "level": "half",
+   "rot90": false,
+   "flat_cm": [
+    30,
+    33
+   ],
+   "footprint_cm": [
+    18.5,
+    18.5
+   ],
+   "thick_cm": 3.2,
+   "dx": 8.0,
+   "dy": 5.0,
+   "z_on": 0.0,
+   "validated": true
+  },
+  "block2": {
+   "dims_cm": [
+    8,
+    8,
+    6
+   ],
+   "rot90": false,
+   "dx": 3.0,
+   "dy": -9.0,
+   "z_on": 1.2
+  },
+  "block1": {
+   "dims_cm": [
+    10,
+    6,
+    4
+   ],
+   "rot90": false,
+   "dx": 5.0,
+   "dy": 0.0,
+   "z_on": 3.2
+  },
+  "block3": {
+   "dims_cm": [
+    12,
+    5,
+    3
+   ],
+   "rot90": false,
+   "dx": 6.0,
+   "dy": 7.5,
+   "z_on": 3.2
+  }
+ },
+ "plan": [
+  "towelB: far_left_corner->near_left_corner + far_right_corner->near_right_corner",
+  "pack:towelB:0,-11",
+  "towelA: far_right_corner->near_right_corner + far_left_corner->near_left_corner",
+  "towelA: near_right_corner->near_left_corner + far_right_corner->far_left_corner",
+  "pack:towelA:-10,7",
+  "shirt: left_armpit->right_hem_corner + right_armpit->left_hem_corner",
+  "shirt: left_shoulder->right_shoulder",
+  "pack:shirt:8,5",
+  "pick_place:block2:3,-9,1.2",
+  "pick_place:block1:5,0,3.2",
+  "pick_place:block3:6,8,3.2"
+ ],
+ "stats": {
+  "fold_steps": 5,
+  "fold_carries": 7,
+  "serial_steps": 2,
+  "asides": 0,
+  "actions": 11,
+  "est_s": 331.0,
+  "max_h": 7.2,
+  "floor_used": 0.832409972299169,
+  "unvalidated": []
+ },
+ "scene": {
+  "box": {
+   "inner_cm": [
+    38,
+    38
+   ],
+   "h_cm": 12
+  },
+  "garments": [
+   {
+    "name": "shirt",
+    "kind": "shirt",
+    "flat_cm": [
+     30,
+     33
+    ],
+    "layer_cm": 0.8,
+    "min_level": "half"
+   },
+   {
+    "name": "towelA",
+    "kind": "towel",
+    "flat_cm": [
+     40,
+     30
+    ],
+    "layer_cm": 0.6,
+    "on": "shirt",
+    "level": "quarter"
+   },
+   {
+    "name": "towelB",
+    "kind": "towel",
+    "flat_cm": [
+     34,
+     24
+    ],
+    "layer_cm": 0.6,
+    "on": "towelA",
+    "level": "half_y"
+   }
+  ],
+  "rigids": [
+   {
+    "name": "block1",
+    "dims_cm": [
+     10,
+     6,
+     4
+    ],
+    "side": "right"
+   },
+   {
+    "name": "block2",
+    "dims_cm": [
+     8,
+     8,
+     6
+    ],
+    "side": "right"
+   },
+   {
+    "name": "block3",
+    "dims_cm": [
+     12,
+     5,
+     3
+    ],
+    "side": "right"
+   }
+  ]
+ },
+ "alternatives": []
+}

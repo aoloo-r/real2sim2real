@@ -1,0 +1,246 @@
+{
+ "garment": "towels",
+ "labels": {
+  "towelA/near_left_corner": {
+   "kind": "corner",
+   "particle": 0,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/near_right_corner": {
+   "kind": "corner",
+   "particle": 4860,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/far_left_corner": {
+   "kind": "corner",
+   "particle": 80,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/far_right_corner": {
+   "kind": "corner",
+   "particle": 4940,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/near_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 2430,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/far_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 2510,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/left_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 40,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/right_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 4900,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/centre": {
+   "kind": "region_center",
+   "particle": 2470,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/near_left_quarter": {
+   "kind": "edge_point",
+   "particle": 1215,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/near_right_quarter": {
+   "kind": "edge_point",
+   "particle": 3645,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/far_left_quarter": {
+   "kind": "edge_point",
+   "particle": 1295,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelA/far_right_quarter": {
+   "kind": "edge_point",
+   "particle": 3725,
+   "snap_cm": 0.0,
+   "garment": "towelA"
+  },
+  "towelB/near_left_corner": {
+   "kind": "corner",
+   "particle": 0,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/near_right_corner": {
+   "kind": "corner",
+   "particle": 3332,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/far_left_corner": {
+   "kind": "corner",
+   "particle": 48,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/far_right_corner": {
+   "kind": "corner",
+   "particle": 3380,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/near_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 1666,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/far_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 1714,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/left_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 24,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/right_edge_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 3356,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/centre": {
+   "kind": "region_center",
+   "particle": 1690,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/near_left_quarter": {
+   "kind": "edge_point",
+   "particle": 833,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/near_right_quarter": {
+   "kind": "edge_point",
+   "particle": 2499,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/far_left_quarter": {
+   "kind": "edge_point",
+   "particle": 881,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "towelB/far_right_quarter": {
+   "kind": "edge_point",
+   "particle": 2547,
+   "snap_cm": 0.0,
+   "garment": "towelB"
+  },
+  "shirt/left_shoulder": {
+   "kind": "corner",
+   "particle": 852,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/right_shoulder": {
+   "kind": "corner",
+   "particle": 4905,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/neckline_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 4434,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/left_sleeve_cuff": {
+   "kind": "corner",
+   "particle": 4842,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/right_sleeve_cuff": {
+   "kind": "corner",
+   "particle": 752,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/left_armpit": {
+   "kind": "corner",
+   "particle": 4842,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/right_armpit": {
+   "kind": "corner",
+   "particle": 4905,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/left_side_seam_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 3330,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/right_side_seam_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 5648,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/left_hem_corner": {
+   "kind": "corner",
+   "particle": 5964,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/right_hem_corner": {
+   "kind": "corner",
+   "particle": 1684,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/hem_midpoint": {
+   "kind": "edge_midpoint",
+   "particle": 3000,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/chest_center": {
+   "kind": "region_center",
+   "particle": 5747,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  },
+  "shirt/torso_center": {
+   "kind": "region_center",
+   "particle": 6236,
+   "snap_cm": 0.0,
+   "garment": "shirt"
+  }
+ },
+ "pairs": []
+}
