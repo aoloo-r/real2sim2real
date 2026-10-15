@@ -1,0 +1,19 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [],
+  "folds_min": 0,
+  "towel_in_box": false,
+  "before": []
+ },
+ "predicates": [],
+ "errors": [
+  "on(cup, shelf): not in the vocabulary (in_box, folded, towel_in_box, before)",
+  "the goal is empty: nothing to do"
+ ],
+ "warnings": [],
+ "unsupported": [],
+ "ok": false
+}

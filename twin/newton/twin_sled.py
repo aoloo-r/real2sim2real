@@ -464,6 +464,15 @@ class SledSim:
         if need > top:
             top = need
             yield from both(top, np.zeros(3), 10.0)
+        # steer by the TOWEL, not by the hands: hanging from its two short edges, the folded towel's
+        # centre sat ~4 cm from the line between the hands (the layers hang unevenly), and that offset
+        # was carried into the box (runs at 84 % / 82 % in place). Measured in the air, the robot sees it.
+        if st.get("steer", E("SLED_PACK_STEER", "centroid")) == "centroid":
+            cq = self.s0.particle_q.numpy()[:, :2].mean(axis=0)
+            d = np.array([goal[0] - cq[0], goal[1] - cq[1], 0.0])
+            if self.verbose:
+                hc = 0.5 * (hl["tip"] + hr["tip"])
+                print(f"[twin-sled] t={self.t:5.1f}s pack towel: in the air its centre is ({cq[0] - hc[0]:+.1f}, {cq[1] - hc[1]:+.1f}) cm from the hands' midpoint; steering by the centre", flush=True)
         yield from both(top, d, 14.0)
         yield from both(self.floor + float(st.get("release_cm", 1.5)), d, 8.0)
         self._unpin(hl); self._unpin(hr)
@@ -524,11 +533,43 @@ class SledSim:
                                 size_cm=[round(float(np.ptp(qi[:, 0])), 1), round(float(np.ptp(qi[:, 1])), 1)], plan_cm=tp["size_cm"],
                                 top_above_floor_cm=round(float(qi[:, 2].max() - self.floor), 1), folds=tp["folds"])
             res["success"] = bool(res["success"] and res["towel"]["in_box_frac"] >= 0.98 and res["towel"]["in_planned_place_frac"] >= 0.9)
+        gs = self.plan.get("goal")
+        if gs and not fast:
+            res["goal_check"] = self.goal_check(gs, res)
+            packed = {s_["name"] for s_ in self.plan["plan"] if s_["op"] == "pick_place"}
+            # the goal's predicates must hold, and every object the plan moved must have landed well
+            res["success"] = bool(ok and all(res["goal_check"].values()) and
+                                  all(v["status"] == "ok" for n, v in res["objects"].items() if n in packed))
         if self.rec:
             self.rec.save()
         if self.out:
             json.dump(res, open(os.path.join(self.out, "sled_audit.json"), "w"), indent=1)
         return res
+
+    def goal_check(self, gs, res):
+        """Each goal predicate, measured on the end state (the same vocabulary goal_parse.py writes)."""
+        out = {}
+        for o in gs["in_box"]:
+            v = res["objects"][o]
+            out[f"in_box({o})"] = bool(v["in_box"] and v["tilt_deg"] < TILT_OK)
+        if gs["folds_min"]:
+            folds = [e for e in self.log if e["op"] == "fold"]
+            L = float(self.plan["scene"]["towel"]["size_cm"][1])
+            k = gs["folds_min"]
+            # k folds done, and the towel's length shows it: at most 1.25x the planned folded length
+            size = res["towel"]["size_cm"] if "towel" in res else self.towel_size()
+            out[f"folded(towel, {k})"] = bool(len(folds) >= k and size[1] <= 1.25 * L / 2 ** len(folds))
+        if gs["towel_in_box"]:
+            t = res.get("towel", {})
+            out["towel_in_box"] = bool(t.get("in_box_frac", 0) >= 0.98 and t.get("in_planned_place_frac", 0) >= 0.9)
+        t_pack = {e["name"]: e["t"] for e in self.log if e["op"] == "pick_place"}
+        for a, b in gs["before"]:
+            out[f"before({a}, {b})"] = bool(a in t_pack and b in t_pack and t_pack[a] < t_pack[b])
+        return out
+
+    def towel_size(self):
+        x0, x1, y0, y1, _ = self.towel_box()
+        return [round(float(x1 - x0), 1), round(float(y1 - y0), 1)]
 
 
 def summary(res):
@@ -546,6 +587,8 @@ if __name__ == "__main__":
         t = r["towel"]
         print(f"[twin-sled] TOWEL: {t['in_box_frac']:.0%} in the box, {t['in_planned_place_frac']:.0%} in its planned place, lies {t['size_cm'][0]:.0f} x {t['size_cm'][1]:.0f} cm "
               f"(plan {t['plan_cm'][0]:.0f} x {t['plan_cm'][1]:.0f} after {t['folds']} folds), top {t['top_above_floor_cm']:.1f} cm above the floor", flush=True)
+    for p, v in r.get("goal_check", {}).items():
+        print(f"[twin-sled] GOAL {p}: {'holds' if v else 'FAILS'}", flush=True)
     print(f"[twin-sled] SLED result: {'SUCCESS' if r['success'] else 'FAIL'} - {summary(r)}; {r['sim_s']:.0f}s sim / {r['wall_s']:.0f}s wall, "
           f"worst IK lag {r['ik_err_max_cm']:.1f} cm, hands closest {r['tip_min_cm']:.1f} cm" + (f"; ABORTED: {r['error']}" if r["error"] else ""), flush=True)
     sys.exit(0 if r["success"] else 1)

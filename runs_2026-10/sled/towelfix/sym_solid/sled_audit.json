@@ -1,0 +1,140 @@
+{
+ "completed": true,
+ "error": null,
+ "objects": {
+  "block1": {
+   "mode": "rode",
+   "xy": [
+    -9.9,
+    18.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 96.5,
+   "from_base_cm": 28.4,
+   "in_box": true,
+   "status": "ok"
+  },
+  "block2": {
+   "mode": "rode",
+   "xy": [
+    -0.0,
+    9.8
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 72.4,
+   "from_base_cm": 32.2,
+   "in_box": true,
+   "status": "ok"
+  },
+  "cup": {
+   "mode": "rode",
+   "xy": [
+    -0.7,
+    18.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 94.7,
+   "from_base_cm": 35.5,
+   "in_box": true,
+   "status": "ok"
+  },
+  "bottle": {
+   "mode": "packed first",
+   "xy": [
+    10.6,
+    18.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 0.0,
+   "from_base_cm": 27.8,
+   "in_box": true,
+   "status": "ok"
+  }
+ },
+ "sim_s": 106.7,
+ "wall_s": 536.0,
+ "log": [
+  {
+   "op": "pick_place",
+   "name": "bottle",
+   "hand": "right",
+   "t": 11.45
+  },
+  {
+   "op": "drag",
+   "t": 21.93,
+   "pulled_cm": 33.6,
+   "duration_s": 1.43,
+   "towel_moved": [
+    0.02,
+    33.32
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "block1",
+   "hand": "left",
+   "t": 35.63
+  },
+  {
+   "op": "pick_place",
+   "name": "block2",
+   "hand": "left",
+   "t": 50.25
+  },
+  {
+   "op": "pick_place",
+   "name": "cup",
+   "hand": "right",
+   "t": 65.88
+  },
+  {
+   "op": "fold",
+   "name": "far edge onto near edge (1)",
+   "t": 83.73,
+   "size_cm": [
+    30.1,
+    28.5
+   ],
+   "residual_cm": [
+    0.58,
+    0.5
+   ]
+  },
+  {
+   "op": "fold",
+   "name": "far edge onto near edge (2)",
+   "t": 90.85,
+   "size_cm": [
+    30.2,
+    12.6
+   ],
+   "residual_cm": [
+    0.51,
+    0.65
+   ]
+  },
+  {
+   "op": "pack_towel",
+   "t": 101.58,
+   "sag_cm": 11.3
+  }
+ ],
+ "ik_err_max_cm": 0.01,
+ "tip_min_cm": 14.0,
+ "success": true,
+ "towel": {
+  "in_box_frac": 1.0,
+  "in_planned_place_frac": 0.9978847170809095,
+  "size_cm": [
+   31.5,
+   17.4
+  ],
+  "plan_cm": [
+   30.0,
+   15.0
+  ],
+  "top_above_floor_cm": 3.2,
+  "folds": 2
+ }
+}

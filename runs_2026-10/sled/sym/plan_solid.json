@@ -1,0 +1,512 @@
+{
+ "task": "sled",
+ "planner": "symbolic A* (tamp_sym.py)",
+ "scene": {
+  "box": {
+   "inner_cm": [
+    38,
+    38
+   ],
+   "h_cm": 12
+  },
+  "towel": {
+   "centre_xy": [
+    0,
+    -90
+   ],
+   "size_cm": [
+    30,
+    60
+   ],
+   "mass_kg": 0.25,
+   "mu": 0.5
+  },
+  "mu_table": 0.5,
+  "pack_towel": true,
+  "objects": [
+   {
+    "name": "block1",
+    "shape": "box",
+    "dims_cm": [
+     8,
+     8,
+     6
+    ],
+    "mass_kg": 0.35,
+    "mu": 0.5,
+    "on_towel_xy": [
+     -6,
+     -22
+    ]
+   },
+   {
+    "name": "block2",
+    "shape": "box",
+    "dims_cm": [
+     10,
+     6,
+     4
+    ],
+    "mass_kg": 0.3,
+    "mu": 0.5,
+    "on_towel_xy": [
+     -5,
+     -6
+    ]
+   },
+   {
+    "name": "cup",
+    "shape": "cup",
+    "dims_cm": [
+     8,
+     8,
+     9
+    ],
+    "mass_kg": 0.3,
+    "mu": 0.5,
+    "on_towel_xy": [
+     7,
+     -20
+    ],
+    "handle_cm": 3.0
+   },
+   {
+    "name": "bottle",
+    "shape": "cylinder",
+    "dims_cm": [
+     6.4,
+     6.4,
+     20
+    ],
+    "mass_kg": 0.5,
+    "mu": 0.5,
+    "on_towel_xy": [
+     6,
+     22
+    ]
+   }
+  ]
+ },
+ "plan": [
+  {
+   "op": "pick_place",
+   "name": "bottle",
+   "to_xy": [
+    10.7,
+    18.0
+   ]
+  },
+  {
+   "op": "drag",
+   "dir": [
+    0.0,
+    1.0
+   ],
+   "dist_cm": 33.6,
+   "accel": 300.0,
+   "vmax": 25.0,
+   "lift_cm": 1.0,
+   "grasp_uv": {
+    "left": [
+     0.25,
+     0.98
+    ],
+    "right": [
+     0.75,
+     0.98
+    ]
+   }
+  },
+  {
+   "op": "pick_place",
+   "name": "block1",
+   "to_xy": [
+    -9.9,
+    18.0
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "block2",
+   "to_xy": [
+    0.0,
+    9.8
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "cup",
+   "to_xy": [
+    -0.7,
+    18.0
+   ]
+  },
+  {
+   "op": "fold",
+   "name": "far edge onto near edge (1)",
+   "moves": [
+    {
+     "hand": "left",
+     "from": [
+      0.05,
+      0.02
+     ],
+     "to": [
+      0.05,
+      0.98
+     ]
+    },
+    {
+     "hand": "right",
+     "from": [
+      0.95,
+      0.02
+     ],
+     "to": [
+      0.95,
+      0.98
+     ]
+    }
+   ],
+   "to_cm": [
+    30.0,
+    30.0
+   ]
+  },
+  {
+   "op": "fold",
+   "name": "far edge onto near edge (2)",
+   "moves": [
+    {
+     "hand": "left",
+     "from": [
+      0.05,
+      0.52
+     ],
+     "to": [
+      0.05,
+      0.98
+     ]
+    },
+    {
+     "hand": "right",
+     "from": [
+      0.95,
+      0.52
+     ],
+     "to": [
+      0.95,
+      0.98
+     ]
+    }
+   ],
+   "to_cm": [
+    30.0,
+    15.0
+   ]
+  },
+  {
+   "op": "pack_towel",
+   "grasp_uv": {
+    "left": [
+     0.05,
+     0.875
+    ],
+    "right": [
+     0.95,
+     0.875
+    ]
+   },
+   "band_half_cm": 4.0,
+   "to_xy": [
+    0.0,
+    -4.0
+   ],
+   "clear_cm": 10.0
+  }
+ ],
+ "riders": [
+  "block1",
+  "block2",
+  "cup"
+ ],
+ "towel_place": {
+  "rect": [
+   -15.0,
+   15.0,
+   -11.5,
+   3.5
+  ],
+  "size_cm": [
+   30.0,
+   15.0
+  ],
+  "folds": 2,
+  "fold_options": [
+   {
+    "folds": [],
+    "size_cm": [
+     30,
+     60.0
+    ],
+    "pinches": 0,
+    "fits": false
+   },
+   {
+    "folds": [
+     "far_to_near"
+    ],
+    "size_cm": [
+     30,
+     30.0
+    ],
+    "pinches": 1,
+    "fits": false
+   },
+   {
+    "folds": [
+     "far_to_near",
+     "far_to_near"
+    ],
+    "size_cm": [
+     30,
+     15.0
+    ],
+    "pinches": 2,
+    "fits": true
+   }
+  ],
+  "strip": [
+   -17.5,
+   17.5,
+   -12.0,
+   4.8
+  ]
+ },
+ "rows": 2,
+ "est_s": 85.4,
+ "search": {
+  "expanded": 16,
+  "rollouts": 5,
+  "pruned": {
+   "dead_end": 2,
+   "budget": 0
+  },
+  "est_s": 85.4,
+  "plan_wall_s": 196.3,
+  "trace": [
+   {
+    "rollout": 1,
+    "state": [
+     "folds(0)",
+     "in_box(bottle)",
+     "on_towel(block1)",
+     "on_towel(block2)",
+     "on_towel(cup)"
+    ],
+    "pull_cm": 28.5,
+    "accel": 300.0,
+    "riders": [
+     "block1",
+     "block2",
+     "cup"
+    ],
+    "toppled": [],
+    "towel_moved_cm": 28.2,
+    "end": {
+     "block1": [
+      -5.9,
+      -84.3
+     ],
+     "block2": [
+      -4.9,
+      -68.3
+     ],
+     "cup": [
+      7.1,
+      -82.3
+     ]
+    },
+    "wall_s": 39.0
+   },
+   {
+    "rollout": 2,
+    "state": [
+     "folds(0)",
+     "on_towel(block1)",
+     "on_towel(block2)",
+     "on_towel(bottle)",
+     "on_towel(cup)"
+    ],
+    "pull_cm": 28.5,
+    "accel": 300.0,
+    "riders": [
+     "block1",
+     "block2",
+     "bottle",
+     "cup"
+    ],
+    "toppled": [
+     "bottle"
+    ],
+    "towel_moved_cm": 28.2,
+    "end": {
+     "block1": [
+      -5.9,
+      -84.3
+     ],
+     "block2": [
+      -4.9,
+      -68.3
+     ],
+     "bottle": [
+      -14.7,
+      -53.3
+     ],
+     "cup": [
+      7.1,
+      -82.3
+     ]
+    },
+    "wall_s": 40.4
+   },
+   {
+    "rollout": 3,
+    "state": [
+     "folds(0)",
+     "in_box(bottle)",
+     "on_towel(block1)",
+     "on_towel(block2)",
+     "on_towel(cup)"
+    ],
+    "pull_cm": 28.5,
+    "accel": 150.0,
+    "riders": [
+     "block1",
+     "block2",
+     "cup"
+    ],
+    "toppled": [],
+    "towel_moved_cm": 28.1,
+    "end": {
+     "block1": [
+      -6.0,
+      -84.4
+     ],
+     "block2": [
+      -4.9,
+      -68.4
+     ],
+     "cup": [
+      7.0,
+      -82.4
+     ]
+    },
+    "wall_s": 39.4
+   },
+   {
+    "rollout": 4,
+    "state": [
+     "folds(0)",
+     "on_towel(block1)",
+     "on_towel(block2)",
+     "on_towel(bottle)",
+     "on_towel(cup)"
+    ],
+    "pull_cm": 28.5,
+    "accel": 150.0,
+    "riders": [
+     "block1",
+     "block2",
+     "bottle",
+     "cup"
+    ],
+    "toppled": [
+     "bottle"
+    ],
+    "towel_moved_cm": 28.1,
+    "end": {
+     "block1": [
+      -5.9,
+      -84.4
+     ],
+     "block2": [
+      -4.9,
+      -68.4
+     ],
+     "bottle": [
+      -105.2,
+      -51.6
+     ],
+     "cup": [
+      7.0,
+      -82.4
+     ]
+    },
+    "wall_s": 39.9
+   },
+   {
+    "rollout": 5,
+    "state": [
+     "folds(0)",
+     "in_box(bottle)",
+     "on_towel(block1)",
+     "on_towel(block2)",
+     "on_towel(cup)"
+    ],
+    "pull_cm": 33.6,
+    "accel": 300.0,
+    "riders": [
+     "block1",
+     "block2",
+     "cup"
+    ],
+    "toppled": [],
+    "towel_moved_cm": 33.3,
+    "end": {
+     "block1": [
+      -5.9,
+      -79.2
+     ],
+     "block2": [
+      -4.9,
+      -63.2
+     ],
+     "cup": [
+      7.1,
+      -77.2
+     ]
+    },
+    "wall_s": 37.1
+   }
+  ],
+  "symbolic_path": [
+   "pick_place('bottle',)",
+   "pull(np.float64(33.6), 300.0)",
+   "pick_place('block1',)",
+   "pick_place('block2',)",
+   "pick_place('cup',)",
+   "fold(1,)",
+   "fold(2,)",
+   "pack_towel(2,)"
+  ],
+  "analytic": {
+   "block1": {
+    "slip": 490.0,
+    "topple": 1308.0
+   },
+   "block2": {
+    "slip": 490.0,
+    "topple": 1472.0
+   },
+   "cup": {
+    "slip": 490.0,
+    "topple": 872.0
+   },
+   "bottle": {
+    "slip": 490.0,
+    "topple": 314.0
+   }
+  }
+ }
+}

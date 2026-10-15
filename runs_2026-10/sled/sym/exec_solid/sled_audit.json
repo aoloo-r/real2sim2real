@@ -1,0 +1,140 @@
+{
+ "completed": true,
+ "error": null,
+ "objects": {
+  "block1": {
+   "mode": "rode",
+   "xy": [
+    -10.3,
+    19.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 97.5,
+   "from_base_cm": 28.8,
+   "in_box": true,
+   "status": "ok"
+  },
+  "block2": {
+   "mode": "rode",
+   "xy": [
+    -0.8,
+    13.6
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 76.1,
+   "from_base_cm": 33.1,
+   "in_box": true,
+   "status": "ok"
+  },
+  "cup": {
+   "mode": "rode",
+   "xy": [
+    -1.0,
+    20.7
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 97.4,
+   "from_base_cm": 36.9,
+   "in_box": true,
+   "status": "ok"
+  },
+  "bottle": {
+   "mode": "packed first",
+   "xy": [
+    10.6,
+    18.0
+   ],
+   "tilt_deg": 0.0,
+   "slip_cm": 0.0,
+   "from_base_cm": 27.8,
+   "in_box": true,
+   "status": "ok"
+  }
+ },
+ "sim_s": 107.0,
+ "wall_s": 542.2,
+ "log": [
+  {
+   "op": "pick_place",
+   "name": "bottle",
+   "hand": "right",
+   "t": 11.45
+  },
+  {
+   "op": "drag",
+   "t": 21.93,
+   "pulled_cm": 33.6,
+   "duration_s": 1.43,
+   "towel_moved": [
+    0.02,
+    33.32
+   ]
+  },
+  {
+   "op": "pick_place",
+   "name": "block1",
+   "hand": "left",
+   "t": 35.63
+  },
+  {
+   "op": "pick_place",
+   "name": "block2",
+   "hand": "left",
+   "t": 50.25
+  },
+  {
+   "op": "pick_place",
+   "name": "cup",
+   "hand": "right",
+   "t": 65.88
+  },
+  {
+   "op": "fold",
+   "name": "far edge onto near edge (1)",
+   "t": 83.73,
+   "size_cm": [
+    30.2,
+    28.6
+   ],
+   "residual_cm": [
+    0.58,
+    0.55
+   ]
+  },
+  {
+   "op": "fold",
+   "name": "far edge onto near edge (2)",
+   "t": 90.85,
+   "size_cm": [
+    30.2,
+    12.5
+   ],
+   "residual_cm": [
+    0.94,
+    0.66
+   ]
+  },
+  {
+   "op": "pack_towel",
+   "t": 101.7,
+   "sag_cm": 11.0
+  }
+ ],
+ "ik_err_max_cm": 0.01,
+ "tip_min_cm": 14.0,
+ "success": false,
+ "towel": {
+  "in_box_frac": 1.0,
+  "in_planned_place_frac": 0.822316234796404,
+  "size_cm": [
+   31.4,
+   16.2
+  ],
+  "plan_cm": [
+   30.0,
+   15.0
+  ],
+  "top_above_floor_cm": 3.5,
+  "folds": 2
+ }
+}

@@ -1,0 +1,215 @@
+{
+ "task": "sled",
+ "planner": "symbolic A* (tamp_sym.py)",
+ "scene": {
+  "box": {
+   "inner_cm": [
+    38,
+    38
+   ],
+   "h_cm": 12
+  },
+  "towel": {
+   "centre_xy": [
+    0,
+    -90
+   ],
+   "size_cm": [
+    30,
+    60
+   ],
+   "mass_kg": 0.25,
+   "mu": 0.5
+  },
+  "mu_table": 0.5,
+  "pack_towel": true,
+  "objects": [
+   {
+    "name": "block1",
+    "shape": "box",
+    "dims_cm": [
+     8,
+     8,
+     6
+    ],
+    "mass_kg": 0.35,
+    "mu": 0.5,
+    "on_towel_xy": [
+     -6,
+     -22
+    ]
+   },
+   {
+    "name": "block2",
+    "shape": "box",
+    "dims_cm": [
+     10,
+     6,
+     4
+    ],
+    "mass_kg": 0.3,
+    "mu": 0.5,
+    "on_towel_xy": [
+     -5,
+     -6
+    ]
+   },
+   {
+    "name": "cup",
+    "shape": "cup",
+    "dims_cm": [
+     8,
+     8,
+     9
+    ],
+    "mass_kg": 0.3,
+    "mu": 0.5,
+    "on_towel_xy": [
+     7,
+     -20
+    ],
+    "handle_cm": 3.0
+   },
+   {
+    "name": "bottle",
+    "shape": "bottle",
+    "dims_cm": [
+     6.4,
+     6.4,
+     20
+    ],
+    "mass_kg": 0.5,
+    "mu": 0.5,
+    "on_towel_xy": [
+     6,
+     22
+    ]
+   }
+  ]
+ },
+ "goal": {
+  "in_box": [
+   "cup",
+   "bottle"
+  ],
+  "folds_min": 0,
+  "towel_in_box": false,
+  "before": []
+ },
+ "plan": [
+  {
+   "op": "pick_place",
+   "name": "bottle",
+   "to_xy": [
+    10.7,
+    18.0
+   ]
+  },
+  {
+   "op": "drag",
+   "dir": [
+    0.0,
+    1.0
+   ],
+   "dist_cm": 26.2,
+   "accel": 300.0,
+   "vmax": 25.0,
+   "lift_cm": 1.0,
+   "grasp_uv": {
+    "left": [
+     0.25,
+     0.98
+    ],
+    "right": [
+     0.75,
+     0.98
+    ]
+   }
+  },
+  {
+   "op": "pick_place",
+   "name": "cup",
+   "to_xy": [
+    -0.7,
+    18.0
+   ]
+  }
+ ],
+ "riders": [
+  "block1",
+  "block2",
+  "cup"
+ ],
+ "towel_place": null,
+ "rows": 2,
+ "est_s": 27.1,
+ "search": {
+  "expanded": 3,
+  "rollouts": 1,
+  "pruned": {
+   "dead_end": 0,
+   "budget": 0
+  },
+  "est_s": 27.1,
+  "plan_wall_s": 39.8,
+  "trace": [
+   {
+    "rollout": 1,
+    "state": [
+     "folds(0)",
+     "in_box(bottle)",
+     "on_towel(block1)",
+     "on_towel(block2)",
+     "on_towel(cup)"
+    ],
+    "pull_cm": 26.2,
+    "accel": 300.0,
+    "riders": [
+     "block1",
+     "block2",
+     "cup"
+    ],
+    "toppled": [],
+    "towel_moved_cm": 25.9,
+    "end": {
+     "block1": [
+      -5.9,
+      -86.5
+     ],
+     "block2": [
+      -4.9,
+      -70.5
+     ],
+     "cup": [
+      7.0,
+      -84.5
+     ]
+    },
+    "wall_s": 39.0
+   }
+  ],
+  "symbolic_path": [
+   "pick_place('bottle',)",
+   "pull(np.float64(26.2), 300.0)",
+   "pick_place('cup',)"
+  ],
+  "analytic": {
+   "block1": {
+    "slip": 490.0,
+    "topple": 1308.0
+   },
+   "block2": {
+    "slip": 490.0,
+    "topple": 1472.0
+   },
+   "cup": {
+    "slip": 490.0,
+    "topple": 872.0
+   },
+   "bottle": {
+    "slip": 490.0,
+    "topple": 531.0
+   }
+  }
+ }
+}

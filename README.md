@@ -220,5 +220,41 @@ plan packed it first. With the mass where the water is, it rides the pull at
 Limits: the arms are kinematic and collide with nothing; grasps are pins (on the
 cloth particles under the jaws, or on the object); the mug collides as its outer
 cylinder plus a handle box (nothing can fall into it) and the water does not slosh;
-friction values are assumed, not measured. The towel's set-down is not repeatable:
-across four runs it ended 100, 99, 88 and 84 % inside its planned rectangle (bar: 90 %).
+friction values are assumed, not measured.
+
+Towel set-down: hanging from its two short edges, the folded towel's centre sits about
+3.3 cm (+y) from the line between the hands, and steering the hands to the target carried
+that offset into the box (runs at 88, 84 and 82 % inside the planned rectangle; bar 90 %).
+The pack now measures the towel's centre in the air and steers that point to the target
+(`SLED_PACK_STEER=hands` restores the old behaviour). Re-running three plans
+(`towelfix/`): 95.5, 100 and 99.8 %, all SUCCESS. Three runs; the towel still lies about
+31 x 17 cm against a planned 30 x 15.
+
+### Goals from words, and the symbolic planner (`tamp_sym.py`, `goal_parse.py`)
+
+`tamp_sym.py` searches the order of actions instead of following a written sequence:
+A* over symbolic states (`on_towel`, `in_box`, `toppled`, `folds`, `towel_in_box`) with
+operators `pick_place`, `pull`, `fold`, `pack_towel`. A pull's effects are not assumed:
+it is simulated in the twin when the search reaches it (lazily, cached), and a pull that
+topples an object it still has to pack is a dead end.
+
+The goal comes from `goal_parse.py`: a VLM (Gemini) writes the instruction in a fixed
+vocabulary, `in_box(o)`, `folded(towel, k)`, `towel_in_box`, `before(a, b)`, and lists
+anything it cannot express as `unsupported` (which stops the run). A checker rejects
+unknown objects, unknown predicates, a `before` without both `in_box`, and cycles, and
+warns when folding the towel forces packing objects the instruction left out. The
+executor's audit checks the same predicates.
+
+```bash
+cd twin/newton
+python goal_parse.py --scene ../../runs_2026-10/sled/scene.json --text "pack the mug and the bottle" --out goal.json
+python goal_parse.py --scene ../../runs_2026-10/sled/scene.json --predicates "in_box(cup); in_box(bottle)" --out goal.json  # no VLM
+python tamp_sym.py --scene ../../runs_2026-10/sled/scene.json --goal goal.json --out plan.json
+python twin_sled.py --plan plan.json --out run/
+```
+
+Planned in `goals/` (goals given as predicates): all + towel; cup and bottle only (the
+blocks stay); all with `before(cup, bottle)` (the bottle now rides the pull, simulated
+upright); fold twice only (all four objects packed first, as warned); an unknown object
+(refused). Not yet tested: the live sentence parse (the Gemini key was refused with a 403
+when this was built), and arm collision checking (motions are scripted waypoints).

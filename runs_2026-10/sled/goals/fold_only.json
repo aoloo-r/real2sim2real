@@ -1,0 +1,20 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [],
+  "folds_min": 2,
+  "towel_in_box": false,
+  "before": []
+ },
+ "predicates": [
+  "folded(towel, 2)"
+ ],
+ "errors": [],
+ "warnings": [
+  "the towel must be clear to fold or pack it, so ['block1', 'block2', 'cup', 'bottle'] will be packed too (the instruction did not ask for it)"
+ ],
+ "unsupported": [],
+ "ok": true
+}

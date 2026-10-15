@@ -1,0 +1,28 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [
+   "cup"
+  ],
+  "folds_min": 0,
+  "towel_in_box": false,
+  "before": [
+   [
+    "cup",
+    "bottle"
+   ]
+  ]
+ },
+ "predicates": [
+  "in_box(cup)",
+  "before(cup, bottle)"
+ ],
+ "errors": [
+  "before(cup, bottle) orders packing, but in_box(bottle) is not in the goal"
+ ],
+ "warnings": [],
+ "unsupported": [],
+ "ok": false
+}

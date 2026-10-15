@@ -1,0 +1,35 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [
+   "cup",
+   "bottle"
+  ],
+  "folds_min": 0,
+  "towel_in_box": false,
+  "before": [
+   [
+    "cup",
+    "bottle"
+   ],
+   [
+    "bottle",
+    "cup"
+   ]
+  ]
+ },
+ "predicates": [
+  "in_box(cup)",
+  "in_box(bottle)",
+  "before(cup, bottle)",
+  "before(bottle, cup)"
+ ],
+ "errors": [
+  "the before() order has a cycle: [['cup', 'bottle'], ['bottle', 'cup']]"
+ ],
+ "warnings": [],
+ "unsupported": [],
+ "ok": false
+}

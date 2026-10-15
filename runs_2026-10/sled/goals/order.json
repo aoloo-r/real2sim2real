@@ -1,0 +1,33 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [
+   "block1",
+   "block2",
+   "cup",
+   "bottle"
+  ],
+  "folds_min": 0,
+  "towel_in_box": true,
+  "before": [
+   [
+    "cup",
+    "bottle"
+   ]
+  ]
+ },
+ "predicates": [
+  "in_box(block1)",
+  "in_box(block2)",
+  "in_box(cup)",
+  "in_box(bottle)",
+  "towel_in_box",
+  "before(cup, bottle)"
+ ],
+ "errors": [],
+ "warnings": [],
+ "unsupported": [],
+ "ok": true
+}

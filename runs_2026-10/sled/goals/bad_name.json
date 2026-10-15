@@ -1,0 +1,22 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [
+   "cup"
+  ],
+  "folds_min": 0,
+  "towel_in_box": false,
+  "before": []
+ },
+ "predicates": [
+  "in_box(cup)"
+ ],
+ "errors": [
+  "in_box(glass): no object 'glass' in the scene (block1, block2, cup, bottle)"
+ ],
+ "warnings": [],
+ "unsupported": [],
+ "ok": false
+}
