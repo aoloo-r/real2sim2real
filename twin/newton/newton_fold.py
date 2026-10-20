@@ -498,7 +498,7 @@ class Fold:
         print(f"[FOLD] '{label}' {w*100:.0f}x{h*100:.0f}cm -> grid {self.dim_x}x{self.dim_y}, "
               f"mode={self.fold_mode} folds={self.folds} faithful={self.faithful}", flush=True)
 
-        self.scene = ModelBuilder(gravity=-981.0)
+        self.scene = ModelBuilder(gravity=(0.0, 0.0, -981.0))
 
         # robot
         franka = ModelBuilder()

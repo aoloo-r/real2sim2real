@@ -203,6 +203,9 @@ class Server:
                     fk = self.fk(q)
                     P = lambda v: Pose.from_list(list(v), tensor_args=self.t)  # noqa: E731
                     off = P(fk["right"]).multiply(P(fk[arm]).inverse())
+                # cuRobo fits spheres by sampling the cuboid surface with numpy's global RNG; unseeded, the carried
+                # object's spheres move a few mm between runs and a check at the clearance limit flips pass/fail
+                np.random.seed(0)
                 self.mg.attach_external_objects_to_robot(self.js(q), ext, link_name="attached_object" + sf, surface_sphere_radius=0.005,
                                                          world_objects_pose_offset=off)
                 self._enable(objs, False)                        # carried, not an obstacle

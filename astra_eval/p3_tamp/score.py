@@ -11,7 +11,7 @@ import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NEWTON = os.path.join(HERE, "..", "..", "twin", "newton")
-PY = os.environ.get("NEWTON_PY", os.path.expanduser("~/miniforge3/envs/newton-1.5/bin/python"))
+PY = os.environ.get("NEWTON_PY", os.path.expanduser("~/miniforge3/envs/newton-1.7/bin/python"))
 
 
 def audit(d):

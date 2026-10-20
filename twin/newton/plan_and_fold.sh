@@ -2,7 +2,7 @@
 # Closed loop: the robot observes the cloth, the planner rolls out from THAT state, the robot
 # executes what the planner returned. No hand-copied plan strings anywhere in the chain.
 set -euo pipefail
-PY=/home/aoloo/miniforge3/envs/newton-1.5/bin/python
+PY=/home/aoloo/miniforge3/envs/newton-1.7/bin/python
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${1:-/tmp/foldloop}"
 DEPTH="${DEPTH:-3}"

@@ -66,7 +66,7 @@ class SledSim:
         self.tw_w, self.tw_l, sp = float(tw["size_cm"][0]), float(tw["size_cm"][1]), float(tw.get("spacing_cm", 1.0))   # width along x, length along y
         self.hin, self.bh = 0.5 * float(sc["box"]["inner_cm"][0]), float(sc["box"]["h_cm"])
         self.floor = TABLE_TOP + 0.5
-        b = ModelBuilder(gravity=-981.0)
+        b = ModelBuilder(gravity=(0.0, 0.0, -981.0))
         b.rigid_gap = 0.0
         (tx, ty, tz), thx, thy, thz = TABLE
         b.add_shape_box(-1, xform=wp.transform((tx, ty, tz), wp.quat_identity()), hx=thx, hy=thy, hz=thz,
@@ -100,15 +100,18 @@ class SledSim:
         self.model = b.finalize()
         self.model.soft_contact_ke, self.model.soft_contact_kd = 1.0e4, 1.0e1
         self.model.soft_contact_mu = float(tw.get("mu", 0.5))
-        self.pipe = newton.CollisionPipeline(self.model, soft_contact_margin=0.5, contact_matching="sticky")
+        self.pipe = newton.CollisionPipeline(self.model, soft_contact_gap=0.5, contact_matching="sticky")
         self.contacts = self.pipe.contacts()
         # the towel folds onto itself only if the plan folds it; rollouts of the pull skip that cost
         self.self_contact = any(s_["op"] in ("fold", "pack_towel") for s_ in plan["plan"]) and E("SLED_SELF_CONTACT", "1") == "1"
         self.model.edge_rest_angle.zero_()
+        # Newton 1.6+ names: interaction distance 0.2 + detection gap 0.15 = the 0.35 query radius tuned on 1.5.
+        # rigid_compliant_alm=False keeps the legacy AVBD body contacts the sled was tuned with (1.8 flips the default)
         self.solver = newton.solvers.SolverVBD(self.model, iterations=int(E("SLED_ITERS", "8")), rigid_contact_history=True,
                                                particle_enable_self_contact=self.self_contact,
-                                               particle_self_contact_radius=0.2, particle_self_contact_margin=0.35,
-                                               particle_topological_contact_filter_threshold=1, particle_rest_shape_contact_exclusion_radius=0.5)
+                                               particle_self_contact_margin=0.2, particle_self_contact_gap=0.15,
+                                               particle_topological_contact_filter_threshold=1, particle_rest_shape_contact_exclusion_radius=0.5,
+                                               rigid_compliant_alm=False)
         self.s0, self.s1, self.ctl = self.model.state(), self.model.state(), self.model.control()
         self.flags0 = self.model.particle_flags.numpy().copy()
         q0 = self.model.particle_q.numpy()

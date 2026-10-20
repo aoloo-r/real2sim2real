@@ -4,7 +4,7 @@ This repository holds a simulated twin of a two-arm robot table (`twin/newton/`)
 towel on the table with small objects standing on it, and an open box. The executor
 `twin/newton/twin_sled.py` runs a plan in the Newton physics twin and audits the result:
 
-    ~/miniforge3/envs/newton-1.5/bin/python twin/newton/twin_sled.py --plan plan.json --out DIR
+    ~/miniforge3/envs/newton-1.7/bin/python twin/newton/twin_sled.py --plan plan.json --out DIR
 
 It writes `DIR/sled_audit.json` and prints `SLED result: SUCCESS|FAIL` with each goal predicate.
 A run takes 5 to 8 minutes of simulation. The plan format is in `packet/FORMAT.md`; the executor

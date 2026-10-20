@@ -201,7 +201,7 @@ class RopeTwin:
         self.F = self.C + np.array([0.0, -self.Rc])               # front point of the coil: every loop starts and ends here
 
         # ---- rope world -----------------------------------------------------------------
-        b = ModelBuilder(gravity=-981.0)
+        b = ModelBuilder(gravity=(0.0, 0.0, -981.0))
         b.rigid_gap = 0.0
         stat = ModelBuilder.ShapeConfig(mu=float(E("ROPE_MU_TABLE", "0.6")), ke=1.0e5, kd=0.0)
         (tx, ty, tz), thx, thy, thz = self.table

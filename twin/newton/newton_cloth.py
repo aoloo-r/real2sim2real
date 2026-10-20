@@ -65,7 +65,7 @@ def main():
           f"({(dim_x+1)*(dim_y+1)} particles)")
 
     wp.init()
-    builder = ModelBuilder(gravity=-981.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, -981.0))
     builder.add_ground_plane()
     builder.add_cloth_grid(
         pos=wp.vec3(-0.5 * dim_x * cell, -0.5 * dim_y * cell, float(args.drop * S)),

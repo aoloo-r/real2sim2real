@@ -8,7 +8,7 @@
 # Each stage writes a RAW log and streams line-buffered. Piping through a plain grep buffers 4KB
 # at a time, which made a working stage look like it had hung for ten minutes.
 set -euo pipefail
-PY=/home/aoloo/miniforge3/envs/newton-1.5/bin/python
+PY=/home/aoloo/miniforge3/envs/newton-1.7/bin/python
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${1:-/tmp/foldrun}"
 N="${2:-16}"

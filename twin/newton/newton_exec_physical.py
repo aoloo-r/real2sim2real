@@ -72,7 +72,7 @@ def main():
     # everything at CM scale + gravity -981 (newton_fold convention: VBD is far more stable
     # at cm than m). Plan poses are in metres -> x100.
     wp.init()
-    scene = ModelBuilder(gravity=-981.0)
+    scene = ModelBuilder(gravity=(0.0, 0.0, -981.0))
     cfg = ModelBuilder.ShapeConfig(mu=0.6)
 
     # --- real box mesh as static open-top collider ---

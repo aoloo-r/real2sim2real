@@ -2,7 +2,7 @@
 # Our stage: the cuRobo layer on the sled actions (also regenerates the packet inputs). About 3 min.
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-PY=${NEWTON_PY:-$HOME/miniforge3/envs/newton-1.5/bin/python}
+PY=${NEWTON_PY:-$HOME/miniforge3/envs/newton-1.7/bin/python}
 export SLED_BOX_Y=${SLED_BOX_Y:-36} SLED_BASE_LIFT_CM=${SLED_BASE_LIFT_CM:-14}
 $PY "$ROOT/astra_eval/p2_motion/export_inputs.py" "$@"
 python3 - <<'EOF'

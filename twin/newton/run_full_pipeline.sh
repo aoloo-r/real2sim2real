@@ -27,7 +27,7 @@
 # from the capture's own mask + depth, and the fold goal is scored against that garment's own
 # flat footprint.
 set -euo pipefail
-PY=/home/aoloo/miniforge3/envs/newton-1.5/bin/python
+PY=/home/aoloo/miniforge3/envs/newton-1.7/bin/python
 ISAAC_PY=/home/aoloo/miniforge3/envs/isaaclab/bin/python
 # Everything visual happens in ISAAC SIM - Newton runs headless throughout. The recordings save
 # incrementally, so the player opens them while they are still being written (accept the

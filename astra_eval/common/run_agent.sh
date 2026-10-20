@@ -18,7 +18,7 @@ else
   mkdir -p "$WT"; cp -r "$PK"/. "$WT"/                               # blind: only the packet
 fi
 MODEL=${MODEL:-$([ "$AGENT" = codex ] && echo gpt-6-astra || echo claude-fable-5-1)}
-PY=${NEWTON_PY:-$HOME/miniforge3/envs/newton-1.5/bin/python}
+PY=${NEWTON_PY:-$HOME/miniforge3/envs/newton-1.7/bin/python}
 $PY "$ROOT/astra_eval/common/runlog.py" start "$RUN" --agent "$AGENT" --model "$MODEL" --packet "$PACKET"
 { cat "$PK/PROMPT.md"; echo; echo "Write every output file into: $RUN/out/"; } > "$RUN/prompt.txt"
 cat <<EOF

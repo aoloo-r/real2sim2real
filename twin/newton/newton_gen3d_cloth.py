@@ -77,7 +77,7 @@ def main():
     print(f"[gen3d] {os.path.basename(args.mesh)}: {len(v)} verts {len(f)} tris, "
           f"scaled x{s:.3f} -> {(v.max(0)-v.min(0)).round(1)} cm", flush=True)
 
-    b = newton.ModelBuilder(gravity=-981.0, up_axis=newton.Axis.Z)
+    b = newton.ModelBuilder(gravity=(0.0, 0.0, -981.0), up_axis=newton.Axis.Z)
     b.add_cloth_mesh(pos=wp.vec3(0.0), rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0),
                      vertices=[wp.vec3(*p) for p in v], indices=f.flatten().tolist(),
                      density=0.02, tri_ke=1.0e4, tri_ka=1.0e4, tri_kd=1.0e-5,

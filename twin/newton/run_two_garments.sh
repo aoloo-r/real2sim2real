@@ -13,7 +13,7 @@
 #             last one on the anchor; recorded to <work>/both/fold_robot.usd and shown in Isaac
 # Only shirts are handled today (TWIN_CLOTH=fit warps the tuned unisex_shirt.usd to each mask).
 set -euo pipefail
-PY=/home/aoloo/miniforge3/envs/newton-1.5/bin/python
+PY=/home/aoloo/miniforge3/envs/newton-1.7/bin/python
 ISAAC_PY=/home/aoloo/miniforge3/envs/isaaclab/bin/python
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${1:?workdir}"; TS="${2:?capture id}"; ANCHOR="${3:-}"

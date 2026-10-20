@@ -13,7 +13,7 @@ SAM=/home/aoloo/sam-3d-objects
 PY_SAM=/home/aoloo/miniforge3/envs/sam3d-objects/bin/python
 PY_HY="${PY_HY:-/home/aoloo/miniforge3/envs/hunyuan3d/bin/python}"
 [ -x "$PY_HY" ] || PY_HY=/home/aoloo/miniforge3/envs/sam3d-objects/bin/python  # hunyuan3d env removed
-PY_NEWTON=/home/aoloo/miniforge3/envs/newton-1.5/bin/python
+PY_NEWTON=/home/aoloo/miniforge3/envs/newton-1.7/bin/python
 TWIN=/home/aoloo/real2sim2real/twin/newton/twin_robot.py
 
 stage="${1:?usage: run_twin_pipeline.sh capture|reconstruct|scene|sim|all [TS]}"

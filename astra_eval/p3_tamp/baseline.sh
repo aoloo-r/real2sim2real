@@ -4,7 +4,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=${1:-$ROOT/astra_eval/runs/p3_tamp/baseline}; mkdir -p "$OUT"
-PY=${NEWTON_PY:-$HOME/miniforge3/envs/newton-1.5/bin/python}
+PY=${NEWTON_PY:-$HOME/miniforge3/envs/newton-1.7/bin/python}
 IN=$ROOT/astra_eval/p3_tamp/inputs
 cd "$ROOT/twin/newton"
 for g in $(python3 -c "import json;print(' '.join(json.load(open('$IN/goals.json')).keys()))"); do
