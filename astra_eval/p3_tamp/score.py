@@ -23,8 +23,9 @@ def row(A):
     if not A:
         return "no audit"
     gc = A.get("goal_check", {})
+    objs = " ".join(f"{n}={v['status']}" for n, v in A["objects"].items())
     return (f"{'SUCCESS' if A['success'] else 'FAIL'}  " + " ".join(f"{k}:{'y' if v else 'N'}" for k, v in gc.items()) +
-            f"  objects {' '.join(f'{n}={v['status']}' for n, v in A['objects'].items())}  sim {A['sim_s']:.0f}s" + (f"  ABORTED {A['error']}" if A.get("error") else ""))
+            f"  objects {objs}  sim {A['sim_s']:.0f}s" + (f"  ABORTED {A['error']}" if A.get("error") else ""))
 
 
 def main():
