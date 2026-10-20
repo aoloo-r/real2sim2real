@@ -58,7 +58,8 @@ $NEWTON_PY astra_eval/p3_tamp/score.py     --run   runs/p3_tamp/codex_1
   The check was nondeterministic at the clearance limit until `motion_server.py` seeded cuRobo's
   attached-object sphere sampling; a problem with 1.2 cm arm-object overlap flipped pass/fail by run.
 - p3 is runnable now; the baseline (`p3_tamp/baseline.sh`) is in `runs/p3_tamp/baseline/`: 4/4 goals
-  SUCCESS on Newton 1.5 (2026-10-20). Newton 1.7 (env `newton-1.7`, now the default) reproduces the
-  mug_bottle outcome; the full 1.7 re-baseline runs into `runs/p3_tamp/baseline_n17/`.
+  SUCCESS on Newton 1.7 (2026-10-20), same plans and goal checks as the earlier Newton 1.5 run kept in
+  `runs/p3_tamp/baseline_n15/` (1.7 is 10-17% faster in wall time; folded towel 0.5-0.8 cm smaller).
+- Codex is logged in (ChatGPT account) and `codex exec --model gpt-6-astra` answers (2026-10-20).
 - Codex CLI 0.163 installed (`npm i -g @openai/codex`) on 2026-10-20, not logged in yet (`codex login`
   with an account that has Astra access). No OpenAI API key on the box.
