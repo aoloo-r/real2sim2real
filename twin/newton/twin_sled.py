@@ -40,7 +40,10 @@ TILT_OK = 15.0
 # Farthest a straight-down grasp can be from an arm's base axis. MEASURED on this arm model: the tip
 # tracks exactly to 92 cm and is 9.7 cm short (tool 8 deg off vertical) at 96 cm; 88 keeps a margin.
 R_PICK = float(E("SLED_REACH_CM", "88"))
-BOX_XY, BOX_WALL = (0.0, 6.0), 1.0
+BOX_XY, BOX_WALL = (0.0, float(E("SLED_BOX_Y", "6"))), 1.0
+# arm mount height above the table. 4 cm: the upper arms graze the box walls and the towel pack puts each
+# hand ~16 cm from its own base axis (both infeasible for a real UR5e; found by the motion layer, motion.py)
+BASE_LIFT = float(E("SLED_BASE_LIFT_CM", "4"))
 
 
 def reach_dist(xy):
@@ -355,6 +358,7 @@ class SledSim:
         # where and how this object is grasped (props.grasp): a block or the bottle's neck at the centre,
         # the mug by its rim wall opposite the handle, jaws across the wall
         off, jaw, depth = props.grasp(o["spec"])
+        jaw = st.get("jaw") or jaw                                  # the motion layer may have chosen the other way
         Ro = q2R(self.s0.body_q.numpy()[o["body"]].astype(float)[3:7])
         psi = math.atan2(Ro[1, 0], Ro[0, 0])                        # how far the object has turned about the vertical
         gz = max(0.0, hh / 2 - depth)

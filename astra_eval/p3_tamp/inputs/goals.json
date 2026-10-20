@@ -1,0 +1,10 @@
+{
+ "all": {"text": "Pack everything into the box, then fold the towel twice and put it in the box too.", "scene": "scene.json",
+         "predicates": ["in_box(block1)", "in_box(block2)", "in_box(cup)", "in_box(bottle)", "folded(towel, 2)", "towel_in_box"]},
+ "mug_bottle": {"text": "Put the mug and the bottle in the box.", "scene": "scene.json",
+                "predicates": ["in_box(cup)", "in_box(bottle)"]},
+ "order": {"text": "Pack everything and the towel into the box; the cup goes in before the bottle.", "scene": "scene.json",
+           "predicates": ["in_box(block1)", "in_box(block2)", "in_box(cup)", "in_box(bottle)", "towel_in_box", "before(cup, bottle)"]},
+ "fold_only": {"text": "Fold the towel in quarters.", "scene": "scene.json",
+               "predicates": ["folded(towel, 2)"], "note": "the towel must be clear, so everything on it has to be packed first"}
+}

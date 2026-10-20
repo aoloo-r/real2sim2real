@@ -53,6 +53,16 @@ def grasp(spec):
     return (0.0, 0.0), ((0.0, 1.0) if w <= float(spec["dims_cm"][1]) else (1.0, 0.0)), 2.5
 
 
+def grasp_jaws(spec):
+    """Jaw directions the top grasp may use, preferred first: a square block or the round bottle neck
+    either way; the mug across its rim wall only; a long block across its narrow side only."""
+    off, jaw, depth = grasp(spec)
+    w, d = float(spec["dims_cm"][0]), float(spec["dims_cm"][1])
+    if kind(spec) == "bottle" or (kind(spec) == "box" and abs(w - d) < 1.5):
+        return [tuple(jaw), (-jaw[1], jaw[0])]
+    return [tuple(jaw)]
+
+
 def bottle_segments(spec):
     """The bottle as stacked cylinders (z_lo, z_hi, radius, mass) from the base: the filled part of
     the body (water + its share of the plastic), the empty part of the body, the neck with the cap.

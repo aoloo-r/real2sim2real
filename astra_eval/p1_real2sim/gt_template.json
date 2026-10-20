@@ -1,0 +1,12 @@
+{
+ "measured_by": "",
+ "date": "",
+ "box": {"inner_cm": [0, 0], "h_cm": 0, "xy": [0, 0]},
+ "towel": {"centre_xy": [0, 0], "size_cm": [0, 0], "mass_kg": 0},
+ "objects": [
+  {"name": "block1", "shape": "box", "dims_cm": [0, 0, 0], "mass_kg": 0, "on_towel_xy": [0, 0], "aliases": ["block", "cube", "wooden block"]},
+  {"name": "block2", "shape": "box", "dims_cm": [0, 0, 0], "mass_kg": 0, "on_towel_xy": [0, 0], "aliases": ["block", "cuboid"]},
+  {"name": "cup", "shape": "cup", "dims_cm": [0, 0, 0], "handle_cm": 0, "mass_kg": 0, "on_towel_xy": [0, 0], "aliases": ["mug"]},
+  {"name": "bottle", "shape": "bottle", "dims_cm": [0, 0, 0], "mass_kg": 0, "fill": 0, "on_towel_xy": [0, 0], "aliases": ["water bottle"]}
+ ]
+}

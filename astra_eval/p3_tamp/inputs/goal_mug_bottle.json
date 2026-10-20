@@ -1,0 +1,22 @@
+{
+ "source": "given",
+ "text": null,
+ "raw": null,
+ "goal": {
+  "in_box": [
+   "cup",
+   "bottle"
+  ],
+  "folds_min": 0,
+  "towel_in_box": false,
+  "before": []
+ },
+ "predicates": [
+  "in_box(cup)",
+  "in_box(bottle)"
+ ],
+ "errors": [],
+ "warnings": [],
+ "unsupported": [],
+ "ok": true
+}
